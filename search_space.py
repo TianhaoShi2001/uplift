@@ -1,0 +1,788 @@
+# ==========================================
+# 工业级调参弹药库 (纯 Grid Search 穷举版)
+# ==========================================
+
+def get_default_hyperparams(task="train_y", version="v1_baseline"):
+    """
+    默认的超参数配置 (用于本地单次 Debug / 一键验证)
+    """
+    base_params = {
+        "learning_rate": 1e-3,
+        "weight_decay": 1e-5,
+        "hidden_dims": [64, 32],
+        "dropout_rate": 0.1,
+        "batch_size": 2048,
+        "num_epochs": 50,
+        "accumulate_steps": 1, # 👉 Debug 模式默认不累加，方便排错
+    }
+    
+    if task == "train_c":
+        # C 的默认兜底
+        base_params.update({
+            "focal_gamma": 2.0,
+            "focal_alpha": 0.25,
+            "align_method": "swd",     # 🌟 默认设为 SWD，或者 moment
+            "align_weight": 0.1,       # 🌟 替代原来的 mmd_alpha
+            "mmd_sigma": 1.0
+        })
+    elif task == "train_y":
+        # Y 的 version 控制 Debug 时的行为
+        if version == "v1_baseline":
+            base_params.update({
+                "c_fusion_mode": "none",
+                "loss_types": ["bce"],
+            })
+        else: # 比如 v2_full_magic
+            base_params.update({
+                "c_fusion_mode": "joint_emb",
+                "c_embedding_dim": 4,
+                "loss_types": ["strata_weighted", "pairwise", "variance_reg"],
+                "rank_margin": 0.05,
+                "rank_alpha": 1.0,
+                "never_threshold": 0.9,
+                "var_lambda": 1.0
+            })
+        
+    return base_params
+
+def get_ray_search_space(task="train_y", version="v1_baseline"):
+    """
+    大规模调参空间 (无缝对接 Ray Tune)
+    通过 task 和 version 共同决定抛出什么空间，全部使用 grid_search！
+    """
+    try:
+        from ray import tune
+    except ImportError:
+        print("⚠️ 警告: 未安装 ray[tune]。")
+        return {}
+
+    # 1. 公共搜索空间 (全局 Grid)
+    space = {
+        "learning_rate": tune.grid_search([1e-3]),
+        "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]),
+        # "hidden_dims": tune.grid_search([[128, 64, 32]]),
+        "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+        # tune.grid_search([[64], [64, 32], [128, 64, 32]]),
+        #  尝试中间版本的时候删掉64 和 64 32，提速度。
+        "dropout_rate": tune.grid_search([0.0]),
+        "batch_size": tune.grid_search([65536*4]),
+        "accumulate_steps": tune.grid_search([4]),
+        'model':tune.grid_search(['TARNET'])
+    }
+
+    # ==========================================
+    # 2. Stage 1 (C 模型) 探索空间 - 严控版本
+    # ==========================================
+    if task == "train_c":
+        if version == "c_v1_base":
+            space.update({
+                "focal_gamma": tune.grid_search([0.0]),  # 纯 BCE
+                "focal_alpha": tune.grid_search([0.5]),  # 绝对公平
+                "align_method": tune.grid_search(["none"]),
+            })
+        elif version == "c_v2_focal":
+            space.update({
+                "focal_gamma": tune.grid_search([1.0, 2.0, 3.0]), # 只验证难样本挖掘的力度
+                "focal_alpha": tune.grid_search([0.5]),      # 不搞类别偏袒
+                "align_method": tune.grid_search(["none"]),
+            })
+
+        elif version == "c_v3_swd":
+            space.update({
+                "focal_gamma": tune.grid_search([0.0]),      # 关掉 Focal，控制变量
+                "focal_alpha": tune.grid_search([0.5]),
+                "align_method": tune.grid_search(["swd"]),
+                "align_weight": tune.grid_search([0.01, 0.1, 1.0]), 
+            })
+        
+        elif version == "c_v4_moment":
+            space.update({
+                "focal_gamma": tune.grid_search([0.0]),      # 关掉 Focal，控制变量
+                "focal_alpha": tune.grid_search([0.5]),
+                "align_method": tune.grid_search(["moment"]),
+                "align_weight": tune.grid_search([0.01, 0.1, 1.0]), 
+            })
+        # 🟢 新增的经典基线系列
+        elif version == "y_baseline_s_learner":
+            space.update({
+                "model": tune.grid_search(["S_Learner"]),
+            })
+        elif version == "y_baseline_t_learner":
+            space.update({
+                "model": tune.grid_search(["T_Learner"]),
+            })
+        elif version == "y_baseline_dragonnet":
+            space.update({
+                "model": tune.grid_search(["DragonNet"]),
+                "dragon_alpha": tune.grid_search([1.0]),  # Propensity loss 权重
+                "dragon_beta": tune.grid_search([1.0]),   # TMLE Reg loss 权重
+            })
+        elif version == "y_baseline_euen":
+            space.update({
+                "model": tune.grid_search(["EUEN"]),
+                # EUEN 纯靠显式预估，通常不需要加各种复杂的损失权重
+            })
+        elif version == "y_baseline_efin":
+            space.update({
+                "model": tune.grid_search(["EFIN"]),
+            })
+        # elif version == "c_v3_mmd":
+        #     space.update({
+        #         "focal_gamma": tune.grid_search([0.0]),      # 拿上一轮表现不错的值固定住
+        #         "focal_alpha": tune.grid_search([0.5]),
+        #         "mmd_alpha": tune.grid_search([0.01, 0.1, 0.5]), # 只专心搜对齐的力度！
+        #         "mmd_sigma": tune.grid_search([1.0])         # 固定带宽
+        #     })
+            
+    # ==========================================
+    # 3. Stage 3 (Y 模型) 探索空间 - 你的原版逻辑
+    # ==========================================
+    elif task == "train_y":
+        # 🟢 版本 1：最纯净的 Baseline (无 C 融合，纯 BCE 损失)
+        if version == "y_v1_base":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["none"]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+
+        elif version == "y_baseline_s_learner":
+            space.update({
+                "model": tune.grid_search(["S_Learner"]),
+            })
+        elif version == "y_baseline_t_learner":
+            space.update({
+                "model": tune.grid_search(["T_Learner"]),
+            })
+        elif version == "y_baseline_dragonnet":
+            space.update({
+                "model": tune.grid_search(["DragonNet"]),
+                "dragon_alpha": tune.grid_search([1.0]),  # Propensity loss 权重
+                "dragon_beta": tune.grid_search([1.0]),   # TMLE Reg loss 权重
+            })
+        elif version == "y_baseline_euen":
+            space.update({
+                "model": tune.grid_search(["EUEN"]),
+                # EUEN 纯靠显式预估，通常不需要加各种复杂的损失权重
+            })
+        elif version == "y_baseline_efin":
+            space.update({
+                "model": tune.grid_search(["EFIN"]),
+                "efin_embed_dim": tune.grid_search([32, 64, 128]), # 
+                "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
+            })
+        # 🟢 经典基线: CFRNet
+
+        elif version == "y_baseline_cfrnet":
+            space.update({
+                "model": tune.grid_search(["CFRNet"]),
+                # 搜一下 SWD 对齐的力度，这个参数对 CFRNet 的效果影响极其致命
+                "cfr_weight": tune.grid_search([ 0.01, 0.1, 1.0]), 
+            })
+
+        elif version == "y_baseline_cfrnet_2":
+            space.update({
+                "model": tune.grid_search(["CFRNet"]),
+                # 搜一下 SWD 对齐的力度，这个参数对 CFRNet 的效果影响极其致命
+                "cfr_weight": tune.grid_search([ 0, 0.001, 0.01, 0.1, 1.0]), 
+                "hidden_dims":tune.grid_search([[64], [64, 32], [128, 64, 32]]),
+            })
+            # "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+            
+        
+        # 🟢 全空间联合建模: DESCN (KDD'22)
+        elif version == "y_baseline_descn":
+            space.update({
+                "model": tune.grid_search(["DESCN"]),
+                # "hidden_dims": tune.grid_search([[128]]), # 遵从论文 4.4 节设定
+                # DESCN 的多任务权重，先保持 1.0 Baseline，gamma 可以轻微扰动
+                "descn_alpha": tune.grid_search([1.0]), 
+                "descn_beta1": tune.grid_search([1.0]),
+                "descn_beta0": tune.grid_search([1.0]),
+                
+                # 🌟 X-Network 交叉权重 (对应 config: h1_w, h0_w)
+                # 直接复用官方泄露的不对称权重：0.5 和 0.1
+                "descn_gamma1": tune.grid_search([0.5, 1.0]), 
+                "descn_gamma0": tune.grid_search([0.1, 0.5]),
+            })
+
+        # 🟡 版本 2：Base + EMB 融合 (只加底层特征拼接，不改 Loss)
+        elif version == "y_v2_emb":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["joint_emb"]),
+                "c_embedding_dim": tune.grid_search([1,4,16]), # EMB 维度
+                "loss_types": tune.grid_search([["bce"]]), # Loss 退回 Base
+            })
+            
+        # 🟡 版本 3：Base + MoE 融合 (只用 C 做专家门控，不改 Loss)
+        elif version == "y_v3_moe":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["moe"]),
+                "loss_types": tune.grid_search([["bce"]]), # Loss 退回 Base
+            })
+        
+        
+            
+        # 🔵 版本 4：Base + 损失分层 (不加 C 融合，纯靠 Strata Loss)
+        elif version == "y_v4_loss_strata":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["none"]), # 融合退回 Base
+                "loss_types": tune.grid_search([["strata_weighted"]]), 
+            })
+            
+        # 🔵 版本 5：Base + 损失分层 + 方差正则化 (不加 C 融合，专攻复杂 Loss)
+        elif version == "y_v5_loss_var":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["none"]), # 融合退回 Base
+                "loss_types": tune.grid_search([["variance_reg"]]),
+                "var_lambda": tune.grid_search([0.1, 1.0, 10]), # 穷举一下方差正则化的惩罚力度
+            })
+        elif version == "y_v6_res_moe":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), # 先用纯 BCE 验证架构优越性
+            })
+        elif version == "y_v7_hard_top5":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["hard"]),
+                "truncation_pct": tune.grid_search([0.05]), 
+            })
+        elif version == "y_v7_hard_top1":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["hard"]),
+                "truncation_pct": tune.grid_search([0.01]), 
+            })   
+        # 2. 硬截断 Top 10% (探底测试：放宽 5% 看看会不会开始引入羊毛党毒药)
+        elif version == "y_v7_hard_top10":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["hard"]),
+                "truncation_pct": tune.grid_search([0.10]),
+            })
+
+        # 3. 软截断 Top 5% (平滑版：防止硬截断在边界处产生梯度突变)
+        elif version == "y_v7_soft_top5":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["soft"]),
+                "truncation_pct": tune.grid_search([0.05]), 
+                "truncation_temp": tune.grid_search([10.0]), # 软截断专属温度
+            })
+        elif version == "y_v7_soft_top1":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["soft"]),
+                "truncation_pct": tune.grid_search([0.01]), 
+                "truncation_temp": tune.grid_search([10.0]), # 软截断专属温度
+            })
+        # 4. 软截断 Top 10%
+        elif version == "y_v7_soft_top10":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["soft"]),
+                "truncation_pct": tune.grid_search([0.10]),
+                "truncation_temp": tune.grid_search([10.0]),
+            })
+        # 5. 对照组：硬截断 Top 30% (模拟退化回 V3 的状态，用于论文反证法)
+        elif version == "y_v7_hard_top30":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "truncation_mode": tune.grid_search(["hard"]),
+                "truncation_pct": tune.grid_search([0.30]),
+            })
+
+
+        # ==========================================
+        # 🟣 V8 演进方案 2: 单门控特征驱动
+        # ==========================================
+        elif version == "y_v8_s1_t5":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([1]),
+                "truncation_pct": tune.grid_search([0.05]), 
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+        elif version == "y_v8_s1_t10":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([1]),
+                "truncation_pct": tune.grid_search([0.10]), 
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+        elif version == "y_v8_s1_t50":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([1]),
+                "truncation_pct": tune.grid_search([0.50]), 
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+
+        # ==========================================
+        # 🟣 V8 演进方案 2: 单门控特征驱动
+        # ==========================================
+        elif version == "y_v8_s2_t5":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([2]),
+                "truncation_pct": tune.grid_search([0.05]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+        elif version == "y_v8_s2_t10":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([2]),
+                "truncation_pct": tune.grid_search([0.10]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+        elif version == "y_v8_s2_t50":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([2]),
+                "truncation_pct": tune.grid_search([0.50]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+
+        # ==========================================
+        # 🟣 V8 演进方案 3: 独立多门控特征驱动 (🌟 最推荐 Baseline)
+        # ==========================================
+        elif version == "y_v8_s3_t5":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([3]),
+                "truncation_pct": tune.grid_search([0.05]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+        elif version == "y_v8_s3_t10":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([3]),
+                "truncation_pct": tune.grid_search([0.10]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+        elif version == "y_v8_s3_t50":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([3]),
+                "truncation_pct": tune.grid_search([0.50]),
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+
+        # ==========================================
+        # 🟣 V8 演进方案 4: 纯特征 MLP Sigmoid (抛弃先验锚点)
+        # ==========================================
+        elif version == "y_v8_s4":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([4]),
+                # 方案 4 不需要 truncation_pct
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+
+        # ==========================================
+        # 🟣 V8 演进方案 5: 纯 Softmax MMoE (抛弃先验锚点)
+        # ==========================================
+        elif version == "y_v8_s5":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([5]),
+                # 方案 5 同样不需要 truncation_pct
+                "loss_types": tune.grid_search([["bce"]]),
+            })
+
+        # ==========================================    
+        # 🟢 V9: 靶向 Group DRO 消融实验矩阵 (基于 V6 骨架)
+        # 目标：解决 5%-10% 的羊毛党特征崩溃
+        # ==========================================
+        elif version == "y_v9_dro_a_coarse":
+            # 方案 A: 1D 先验粗切 4 组 (0-5%, 5-10%, 10-20%, 20-100%)
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]), # 基于 V6
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["1d_coarse"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v9_dro_b_coarse":
+            # 方案 B: 2D 因果交叉 16 组 (4组 先验 x 4种 T/Y) -> 🌟 核心绝杀版
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["2d_coarse"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v9_dro_a_fine":
+            # 方案 A_fine: 1D 先验细切 10 组 (十分位)
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["1d_fine"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v9_dro_b_fine":
+            # 方案 B_fine: 2D 因果细切 40 组 (对比项：用作反证法证明细切会导致过拟合)
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["2d_fine"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v10_conflict_wool":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]), # 基于 V6 强力底座
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_mode": tune.grid_search(["wool_only"]),
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]), # 探索惩罚力度
+            })
+        elif version == "y_v10_conflict_gold":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_mode": tune.grid_search(["gold_only"]),
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
+            })
+        elif version == "y_v10_conflict_both":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_mode": tune.grid_search(["both"]),
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
+            })
+        elif version == "y_v7_conflict_wool":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]), # 🌟 开启 V7 结构
+                "truncation_mode": tune.grid_search(["soft"]),           # V7 专属: 硬截断
+                "truncation_temp": tune.grid_search([10.0]),
+                "truncation_pct": tune.grid_search([0.05]),              # V7 专属: 锁定前 5%
+                "loss_types": tune.grid_search([["prior_conflict"]]),    # 🌟 开启 V10 Loss
+                "conflict_mode": tune.grid_search(["wool_only"]),        # V10 专属: 仅惩罚羊毛党
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0]),     # 探索惩罚力度
+            })
+            
+        elif version == "y_v7_conflict_gold":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "truncation_mode": tune.grid_search(["soft"]),           # V7 专属: 硬截断
+                "truncation_temp": tune.grid_search([10.0]),
+                "truncation_pct": tune.grid_search([0.05]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_mode": tune.grid_search(["gold_only"]),        # V10 专属: 仅奖励隐藏金子
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0]),
+            })
+            
+        elif version == "y_v7_conflict_both":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "truncation_mode": tune.grid_search(["soft"]),           # V7 专属: 硬截断
+                "truncation_temp": tune.grid_search([10.0]),
+                "truncation_pct": tune.grid_search([0.05]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_mode": tune.grid_search(["both"]),             # V10 专属: 双向全面纠偏
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0]),
+            })
+        elif version == "y_v7_dro_a_coarse":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]), # 🌟 V7 结构
+                "truncation_mode": tune.grid_search(["soft"]),           # 🌟 V7 软截断
+                "truncation_pct": tune.grid_search([0.05]),              # 🌟 V7 Top 5%
+                "truncation_temp": tune.grid_search([10.0]),             
+                "loss_types": tune.grid_search([["group_dro"]]),         # 🌟 V9 DRO Loss
+                "dro_grouping_mode": tune.grid_search(["1d_coarse"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v7_dro_b_coarse":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "truncation_mode": tune.grid_search(["soft"]),
+                "truncation_pct": tune.grid_search([0.05]),
+                "truncation_temp": tune.grid_search([10.0]),
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["2d_coarse"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v7_dro_a_fine":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "truncation_mode": tune.grid_search(["soft"]),
+                "truncation_pct": tune.grid_search([0.05]),
+                "truncation_temp": tune.grid_search([10.0]),
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["1d_fine"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        elif version == "y_v7_dro_b_fine":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]),
+                "truncation_mode": tune.grid_search(["soft"]),
+                "truncation_pct": tune.grid_search([0.05]),
+                "truncation_temp": tune.grid_search([10.0]),
+                "loss_types": tune.grid_search([["group_dro"]]),
+                "dro_grouping_mode": tune.grid_search(["2d_fine"]),
+                "dro_ng": tune.grid_search([0.01, 0.05, 0.1]),
+                "dro_ema": tune.grid_search([0.1, 0.5, 0.9]),
+                "dro_clip": tune.grid_search([0.5])
+            })
+        # ==========================================
+        # 🟣 V8: 原始概率空间融合流 (S4, S6, S7, S8)
+        # ==========================================
+        # elif version == "y_v8_s4":
+        #     space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), 
+        #                   "v8_scheme": tune.grid_search([4]),
+        #                     "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), 
+                          "v8_scheme": tune.grid_search([6]), 
+                          "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s7":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                           "v8_scheme": tune.grid_search([7]), 
+                           "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s8":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), 
+                          "v8_scheme": tune.grid_search([8]), 
+                          "loss_types": tune.grid_search([["bce"]])})
+
+        # ==========================================
+        # 🌟 V11: Logit 空间加法融合流 (S4, S6, S7, S8)
+        # ==========================================
+        elif version == "y_v11_s4":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), 
+                          "v11_scheme": tune.grid_search([4]), 
+                          "align_type": tune.grid_search(["lift"]), 
+                          "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), 
+                          "v11_scheme": tune.grid_search([6]), 
+                          "align_type": tune.grid_search(["lift"]), 
+                          "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s7":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), 
+                          "v11_scheme": tune.grid_search([7]), 
+                          "align_type": tune.grid_search(["lift"]), 
+                          "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s8":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), 
+                          "v11_scheme": tune.grid_search([8]), 
+                          "align_type": tune.grid_search(["lift"]), 
+                          "loss_types": tune.grid_search([["bce"]])})
+
+        elif version == "y_v8_s6_temp0.2":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([0.2]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp0.5":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([0.5]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp1.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([1.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp2.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([2.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp5.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([5.0]), "loss_types": tune.grid_search([["bce"]])})
+
+        elif version == "y_v11_s6_lift_temp0.2":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([0.2]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp0.5":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([0.5]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp1.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([1.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp2.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([2.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp5.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([5.0]), "loss_types": tune.grid_search([["bce"]])})
+        
+        # 2. Z-Score 空间组
+        elif version == "y_v11_s6_zscore_temp0.2":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([0.2]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp0.5":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([0.5]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp1.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([1.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp2.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([2.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp5.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([5.0]), "loss_types": tune.grid_search([["bce"]])})
+
+        # 3. Rank 空间组
+        elif version == "y_v11_s6_rank_temp0.2":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([0.2]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp0.5":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([0.5]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp1.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([1.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp2.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([2.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp5.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([5.0]), "loss_types": tune.grid_search([["bce"]])})
+
+
+
+# ==========================================================
+        # 🔥 V8 温度消融组: 超高温区 (10.0, 20.0, 50.0, 100.0)
+        # ==========================================================
+        elif version == "y_v8_s6_temp10.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([10.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp20.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([20.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp50.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([50.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v8_s6_temp100.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), "v8_scheme": tune.grid_search([6]), "align_temp": tune.grid_search([100.0]), "loss_types": tune.grid_search([["bce"]])})
+
+        # ==========================================================
+        # 🔥 V11 空间与温度消融组: S6 超高温核心战区
+        # ==========================================================
+        # 1. Lift 空间超高温组
+        elif version == "y_v11_s6_lift_temp10.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([10.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp20.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([20.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp50.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([50.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_lift_temp100.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["lift"]), "align_temp": tune.grid_search([100.0]), "loss_types": tune.grid_search([["bce"]])})
+        
+        # 2. Z-Score 空间超高温组
+        elif version == "y_v11_s6_zscore_temp10.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([10.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp20.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([20.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp50.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([50.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_zscore_temp100.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["z_score"]), "align_temp": tune.grid_search([100.0]), "loss_types": tune.grid_search([["bce"]])})
+
+        # 3. Rank 空间超高温组
+        elif version == "y_v11_s6_rank_temp10.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([10.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp20.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([20.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp50.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([50.0]), "loss_types": tune.grid_search([["bce"]])})
+        elif version == "y_v11_s6_rank_temp100.0":
+            space.update({"c_fusion_mode": tune.grid_search(["v11_aligned_moe"]), "v11_scheme": tune.grid_search([6]), "align_type": tune.grid_search(["rank"]), "align_temp": tune.grid_search([100.0]), "loss_types": tune.grid_search([["bce"]])})
+
+
+
+        # --------------------baselines
+        elif version == "y_mtmt_mlp":
+            space.update({
+                "model": tune.grid_search(["MTMT"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                # 🌟 MLP 核心搜索矩阵
+                "expert_type": tune.grid_search(["mlp"]),
+                "expert_hidden_dims": tune.grid_search([
+                    [128, 64, 32], # 深且漏斗
+                    [64, 32],      # 浅层漏斗
+                    [64]           # 极简单层
+                ]),
+                "dropout_rate": tune.grid_search([0.1]),
+                "num_experts": tune.grid_search([4]),    
+                "t_emb_dim": tune.grid_search([16]), 
+                "aux_weight": tune.grid_search([0.1, 0.5, 1.0]) 
+            })
+        elif version == "y_mtmt_resnet":
+            space.update({
+                "model": tune.grid_search(["MTMT"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                "expert_type": tune.grid_search(["resnet18"]),
+                "expert_hidden_dims": tune.grid_search([[32], [64], [128]]),
+                "num_experts": tune.grid_search([4]),    
+                "t_emb_dim": tune.grid_search([16]), 
+                "batch_size": tune.grid_search([15360]),
+                "aux_weight": tune.grid_search([0.5, 1.0, 0.1]) 
+            })
+        elif version == "y_ecup":
+            space.update({
+                "model": tune.grid_search(["ECUP"]),
+                "loss_types": tune.grid_search([["bce"]]), # ECUP 内部接管了 Loss，留空即可
+                
+                # ------------------------------------------
+                # 🌟 核心 1: 严格对齐 Table 2 的网格搜索空间
+                # ------------------------------------------
+                # "learning_rate": tune.grid_search([1e-4, 1e-3, 1e-2]), # 对应论文 lr
+                "d_dim": tune.grid_search([8, 16, 32]),                # 对应论文 d (Embedding dimension)
+                "tower_h": tune.grid_search([128]), # ([128, 256, 512]),          # 对应论文 h (Task's hidden units of first layer)
+                "tae_h": tune.grid_search([128]), # ([64, 128, 256, 512]),        # 对应论文 h_gate (TAEGate's hidden units)
+                
+                # ------------------------------------------
+                # 🌟 核心 2: 严格对齐 5.1.2 节的固定网络结构
+                # ------------------------------------------
+                "num_heads": tune.grid_search([2]),      # 原文: number of heads of the multi-head attention is 2
+                
+                # ------------------------------------------
+                # 基础训练参数
+                # ------------------------------------------
+                "batch_size": tune.grid_search([65536]),  # 原文: batch_size is 2^11
+                # "num_epochs": tune.grid_search([50]),
+                "gamma": tune.grid_search([1.0]),
+                "ctcvr_weight": tune.grid_search([1.0])  # 默认 1:1 联合优化
+            })
+        elif version == "y_motto":
+            space.update({
+                "model": tune.grid_search(["MOTTO"]),
+                "loss_types": tune.grid_search([["bce"]]), 
+                
+                # "learning_rate": tune.grid_search([1e-3]),
+                # "batch_size": tune.grid_search([4096]), 
+                # "num_epochs": tune.grid_search([50]),
+                
+                # 🌟 加入初始特征投影维度
+                "d_dim": tune.grid_search([16]), 
+                "bottom_dim": tune.grid_search([64]),
+                # 🌟 这里你可以自由探索专家的“漏斗形状”或“直筒形状”了
+                "expert_hidden_dims": tune.grid_search([[64], [64, 32], [128, 64, 32]]),
+                "tower_dim": tune.grid_search([64]),
+                
+                "use_specific_experts": tune.grid_search([True]),
+                "alpha_sda": tune.grid_search([0.1, 0.5, 1.0, 5.0]), 
+                "aux_weight": tune.grid_search([0.1, 0.5, 1.0])
+            })
+
+        # 🟢 版本 4：TARNET Naive Multitask (主任务 Y + 辅任务 C 联合优化)
+        elif version == "y_v1_naive_mt_small_c_weight":
+            space.update({
+                "model": tune.grid_search(["TARNET_MT"]),  # 强制顶掉默认的 TARNET
+                "c_fusion_mode": tune.grid_search(["none"]), 
+                "mt_c_weight": tune.grid_search([0.1, 0.3, 0.5]), # 探索辅助任务拉扯的力度
+                "loss_types": tune.grid_search([["bce"]]),        # Baseline 保持纯净
+            })
+        elif version == "y_v1_naive_mt_larger_c_weight":
+            space.update({
+                "model": tune.grid_search(["TARNET_MT"]),  # 强制顶掉默认的 TARNET
+                "c_fusion_mode": tune.grid_search(["none"]), 
+                "mt_c_weight": tune.grid_search([1.0, 2.0, 5.0]), # 探索辅助任务拉扯的力度
+                "loss_types": tune.grid_search([["bce"]]),        # Baseline 保持纯净
+            })
+        else:
+            space.update({
+                "c_fusion_mode": tune.grid_search(["none"]),
+                "loss_types": tune.grid_search([
+                    ["bce"]]),
+            })
+            
+    return space
+
+if __name__ == "__main__":
+    import json
+    print("🚀 开始验证 search_space.py 模块...\n")
+    default_params = get_default_hyperparams(task="train_y", version="v2_full_magic")
+    print("🧪 验证 version=v2_full_magic 的 Y 阶段默认参数：")
+    print(json.dumps(default_params, indent=4, ensure_ascii=False))

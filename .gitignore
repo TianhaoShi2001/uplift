@@ -1,0 +1,11 @@
+__pycache__/
+*logs*/
+experiment_logs_0415/
+*plots*/
+*.png
+ckpts/
+ray_results/
+old/
+reproduce_dynamic_logs_old/
+*.csv
+results/
