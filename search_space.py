@@ -56,22 +56,50 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
         print("⚠️ 警告: 未安装 ray[tune]。")
         return {}
 
-    # 1. 公共搜索空间 (全局 Grid)
     space = {
         "learning_rate": tune.grid_search([1e-3]),
-        "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]),
-        # "hidden_dims": tune.grid_search([[128, 64, 32]]),
-        "hidden_dims": tune.grid_search([[128, 64, 32]]), # tune.grid_search([[128, 64, 32]]),
-        # tune.grid_search([[128, 64, 32]]), [64], [64, 32], 
-        #   tune.grid_search([[64], [64, 32], [128, 64, 32]]),
-        # tune.grid_search([[128, 64, 32]]), 
-        # tune.grid_search([[64], [64, 32], [128, 64, 32]]),
-        #  尝试中间版本的时候删掉64 和 64 32，提速度。
+        "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3]),
+        "hidden_dims": tune.grid_search([[128, 64, 32]]), 
         "dropout_rate": tune.grid_search([0.0]),
         "batch_size": tune.grid_search([65536*4]),
         "accumulate_steps": tune.grid_search([4]),
-        'model':tune.grid_search(['TARNET'])
+        'model': tune.grid_search(['TARNET']),
+        
+        # 👑 [预留高级接口：默认安全底座关闭]
+        "head_hidden_dims": tune.grid_search([None]),               # 默认不传 head_hidden_dims，保持旧版本裸线性头向下兼容
+        "conflict_alpha_wool": tune.grid_search([0.0]),             # 默认关闭三人群解耦，保持原版 conflict_alpha 控场
+        "conflict_alpha_gold": tune.grid_search([0.0]),
+        "conflict_alpha_walkin": tune.grid_search([0.0]),
+        "conflict_focal_type": tune.grid_search(["none"]),         # 默认不截断，不启动全局保底版 Focal
+        "conflict_gamma": tune.grid_search([2.0]),
+        "conflict_global_margin": tune.grid_search([1.0]),
+        "conflict_use_ohem": tune.grid_search([False]),             # 默认关闭困难样本挖掘
+        "conflict_ohem_pct": tune.grid_search([0.10]),
+        "conflict_use_weight_clip": tune.grid_search([False]),       # 默认关闭 Loss 侧权重裁剪
+        "conflict_max_weight_thres": tune.grid_search([3.0]),
+        "conflict_two_stage_mode": tune.grid_search([False]),       # 默认关闭训练时空两阶段流
+        "conflict_stage1_epochs": tune.grid_search([0]),
+        "conflict_freeze_base_in_stage2": tune.grid_search([False]),
+        "ours_s6_use_logit_clamp": tune.grid_search([False]),       # 默认关闭 S6 前向修正 Logit 空间裁剪
+        "ours_s6_clamp_val": tune.grid_search([2.0])
     }
+
+    # 1. 公共搜索空间 (全局 Grid)
+    # space = {
+    #     "learning_rate": tune.grid_search([1e-3]),
+    #     "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]),
+    #     # "hidden_dims": tune.grid_search([[128, 64, 32]]),
+    #     "hidden_dims": tune.grid_search([[128, 64, 32]]), # tune.grid_search([[128, 64, 32]]),
+    #     # tune.grid_search([[128, 64, 32]]), [64], [64, 32], 
+    #     #   tune.grid_search([[64], [64, 32], [128, 64, 32]]),
+    #     # tune.grid_search([[128, 64, 32]]), 
+    #     # tune.grid_search([[64], [64, 32], [128, 64, 32]]),
+    #     #  尝试中间版本的时候删掉64 和 64 32，提速度。
+    #     "dropout_rate": tune.grid_search([0.0]),
+    #     "batch_size": tune.grid_search([65536*4]),
+    #     "accumulate_steps": tune.grid_search([4]),
+    #     'model':tune.grid_search(['TARNET'])
+    # }
 
     # ==========================================
     # 2. Stage 1 (C 模型) 探索空间 - 严控版本
@@ -149,11 +177,192 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
     # ==========================================
     elif task == "train_y":
         # 🟢 版本 1：最纯净的 Baseline (无 C 融合，纯 BCE 损失)
+
+
+
+
         if version == "y_v1_base":
             space.update({
                 "c_fusion_mode": tune.grid_search(["none"]),
                 "loss_types": tune.grid_search([["bce"]]),
             })
+        # ==========================================================
+        # 🌟 纯 V10 突围战 & 循序渐进消融对照大阵列 (修正参数范围 + 裸Linear头版)
+        # ==========================================================
+        
+        # --- [实验 1/6: 单独探索 - 纯羊毛党靶向重击] ---
+        elif version == "y_pure_v10_solo_wool":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["wool"]), 
+                "conflict_alpha_wool": tune.grid_search([0.1, 0.5, 1.0, 5.0, 10.0]), # 🌟 精准修正搜索范围
+            })
+
+        # --- [实验 2/6: 单独探索 - 纯隐藏金子绝对拯救] ---
+        elif version == "y_pure_v10_solo_gold":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["gold"]), 
+                "conflict_alpha_gold": tune.grid_search([0.1, 0.5, 1.0, 5.0, 10.0]), # 🌟 精准修正搜索范围
+            })
+
+        # --- [实验 3/6: 单独探索 - 纯自然进店镜像拦截] ---
+        elif version == "y_pure_v10_solo_walkin":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["walkin"]), 
+                "conflict_alpha_walkin": tune.grid_search([0.1, 0.5, 1.0, 5.0, 10.0]), # 🌟 精准修正搜索范围
+            })
+
+        # --- [实验 4/6: 混合全激活 - 三人群(All)共享同一爆破参数] ---
+        elif version == "y_pure_v10_mix_all_same_alpha":
+            alpha_grid = [0.1, 0.5, 1.0, 5.0, 10.0] # 🌟 精准修正共享步长范围
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
+                "conflict_alpha_gold": tune.grid_search(alpha_grid),   
+                "conflict_alpha_walkin": tune.grid_search(alpha_grid), 
+            })
+
+        # --- [实验 5/6: 经典双向对齐 - 羊毛+金子(Both)共享同一老版机制参数] ---
+        elif version == "y_pure_v10_mix_both_same_alpha":
+            alpha_grid = [0.1, 0.5, 1.0, 5.0, 10.0] # 🌟 精准修正共享步长范围
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["wool_gold"]), 
+                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
+                "conflict_alpha_gold": tune.grid_search(alpha_grid),   
+            })
+        elif version == "y_pure_v10_mix_both_same_alpha_head":
+            alpha_grid = [1.0, 10.0] # 🌟 精准修正共享步长范围
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([32],[64,32],[128,64,32],[32,32]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["wool_gold"]), 
+                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
+                "conflict_alpha_gold": tune.grid_search(alpha_grid),   
+            })
+
+        # --- [实验 6/6: 🌟 新增特定双向组合 - 羊毛+自然进店(Wool+Walkin)共享同一参数] ---
+        elif version == "y_pure_v10_mix_wool_walkin_same_alpha":
+            alpha_grid = [0.1, 0.5, 1.0, 5.0, 10.0] # 🌟 精准修正共享步长范围
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["wool_walkin"]), 
+                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
+                "conflict_alpha_walkin": tune.grid_search(alpha_grid), 
+            })
+        elif version == "y_pure_v10_debug_arena":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), # 物理上在 Residual Base 下突围
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([[32]]),           # 🌟 激活公平加深 Head！
+                "conflict_mode": tune.grid_search(["all"]),
+                
+                # 🧪 分离实验：想调哪个就把哪个参数解冻写进 grid_search 列表即可，其余会稳稳走上面的公共 0.0 关闭默认值！
+                "conflict_alpha_wool": tune.grid_search([0.0, 2.0, 5.0]),   
+                "conflict_alpha_gold": tune.grid_search([0.0, 5.0]),  
+                "conflict_alpha_walkin": tune.grid_search([0.0, 2.0]),
+                
+                "conflict_focal_type": tune.grid_search(["none", "global_bounded"]), # 测实验 3: 保底 Focal 
+                "conflict_use_ohem": tune.grid_search([False, True]),               # 测实验 4: OHEM
+                "conflict_use_weight_clip": tune.grid_search([False, True]),         # 测实验 6: Loss侧裁剪
+                "conflict_two_stage_mode": tune.grid_search([False, True]),          # 测两阶段训练流
+                "conflict_stage1_epochs": tune.grid_search([5]),
+                "conflict_freeze_base_in_stage2": tune.grid_search([True])
+            })
+
+        # ==========================================================
+        # 🌟 Ours 核心架构与历史演进兼容 (保持原本老逻辑，额外多塞入消融调试接口)
+        # ==========================================================
+        elif version == "y_ours_s4_conflict":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_alpha": tune.grid_search([0, 0.01, 0.1, 0.5, 1.0, 5.0, 10]),
+                "conflict_mode": tune.grid_search(["both"]),
+                # 👇 下面这些留给你要做 debug 或分离时一键启动，目前都是 tune.grid_search([默认]) 绝不破坏老版本执行结果
+                "head_hidden_dims": tune.grid_search([[32]]) # Ours 架构默认同步开起 Head 公平对齐
+            })
+            
+        # 🟢 在所有 S6 的独立温度分支中，同步塞入加深 Head、Logit裁剪等全新可调空间入口
+        elif version == "y_ours_s6_conflict_temp1.0":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), 
+                "conflict_mode": tune.grid_search(["both"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), 
+                "ours_s6_temp": tune.grid_search([1.0]), 
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
+                "head_hidden_dims": tune.grid_search([[32]]), # 🌟 开启高容量 Head
+                "ours_s6_use_logit_clamp": tune.grid_search([False, True]) # 🌟 留好一键 Logit 空间裁剪防数值黑洞接口！
+            })
+            
+        elif version == "y_ours_s6_conflict_temp5.0":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), 
+                "conflict_mode": tune.grid_search(["both"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), 
+                "ours_s6_temp": tune.grid_search([5.0]), 
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
+                "head_hidden_dims": tune.grid_search([[32]]),
+                "ours_s6_use_logit_clamp": tune.grid_search([False, True])
+            })
+            
+        elif version == "y_ours_s6_conflict_temp10.0":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), 
+                "conflict_mode": tune.grid_search(["both"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), 
+                "ours_s6_temp": tune.grid_search([10.0]), 
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
+                "head_hidden_dims": tune.grid_search([[32]]),
+                "ours_s6_use_logit_clamp": tune.grid_search([False, True])
+            })
+            
+        elif version == "y_ours_s6_conflict_temp20.0":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), 
+                "conflict_mode": tune.grid_search(["both"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), 
+                "ours_s6_temp": tune.grid_search([20.0]), 
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
+                "head_hidden_dims": tune.grid_search([[32]]),
+                "ours_s6_use_logit_clamp": tune.grid_search([False, True])
+            })
+            
+        elif version == "y_ours_s6_conflict_temp5.0": # 对应原代码里的重复定义项
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), 
+                "conflict_mode": tune.grid_search(["both"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), 
+                "ours_s6_temp": tune.grid_search([5.0]), 
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0]),
+                "head_hidden_dims": tune.grid_search([[32]]),
+                "ours_s6_use_logit_clamp": tune.grid_search([False, True])
+            })
+
 
         elif version == "y_baseline_s_learner":
             space.update({
@@ -174,17 +383,26 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "model": tune.grid_search(["EUEN"]),
                 # EUEN 纯靠显式预估，通常不需要加各种复杂的损失权重
             })
-        elif version == "y_baseline_efin":
+        elif version == "y_baseline_efin_32":
             space.update({
                 "model": tune.grid_search(["EFIN"]),
                 "efin_embed_dim": tune.grid_search([32]), # tune.grid_search([32, 64, 128]), # 
-                "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
+                "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]),
+                # "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
             })
         elif version == "y_baseline_efin_64":
             space.update({
                 "model": tune.grid_search(["EFIN"]),
                 "efin_embed_dim": tune.grid_search([64]), # tune.grid_search([32, 64, 128]), # 
-                "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
+                "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]),
+                # "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
+            })
+        elif version == "y_baseline_efin_128":
+            space.update({
+                "model": tune.grid_search(["EFIN"]),
+                "efin_embed_dim": tune.grid_search([128]), # tune.grid_search([32, 64, 128]), #
+                "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]), 
+                # "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
             })
         # 🟢 经典基线: CFRNet
 
@@ -225,31 +443,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "descn_gamma1": tune.grid_search([0.5, 1.0]), 
                 "descn_gamma0": tune.grid_search([0.1, 0.5]),
             })
-    # ==========================================================
-        # 🌟 Ours 核心架构二: y_ours_s6_conflict 温度独立命名阵列
-        # ==========================================================
-        elif version == "y_ours_s4_conflict":
-            space.update({
-                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
-                "loss_types": tune.grid_search([["prior_conflict"]]),
-                "conflict_alpha": tune.grid_search([0, 0.01,0.1, 0.5, 1.0, 5.0, 10]),
-                "conflict_mode": tune.grid_search(["both"]),
-            })
-        elif version == "y_ours_s6_conflict_temp1.0":
-            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([1.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
-            
-        elif version == "y_ours_s6_conflict_temp5.0":
-            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([5.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
-            
-        elif version == "y_ours_s6_conflict_temp10.0":
-            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([10.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
-            
-        elif version == "y_ours_s6_conflict_temp20.0":
-            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([20.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
-            
-        elif version == "y_ours_s6_conflict_temp50.0":
-            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([5.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0])})
-        # 🟡 版本 2：Base + EMB 融合 (只加底层特征拼接，不改 Loss)
+
         elif version == "y_v2_emb":
             space.update({
                 "c_fusion_mode": tune.grid_search(["joint_emb"]),

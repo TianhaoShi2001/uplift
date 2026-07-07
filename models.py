@@ -2360,101 +2360,239 @@ class EUEN(nn.Module):
         
 #         return y0_logit, y1_logit, {"efin_constraint_logit": t_constraint_logit}
 
-class EFIN(nn.Module):
-    def __init__(self, continuous_dim, categorical_cardinalities, embed_dim=16, 
-                 hidden_dims=[128, 64, 32], dropout_rate=0.0):
-        super().__init__()
-        self.cont_dim = continuous_dim if continuous_dim is not None else 0
-        self.cat_cards = categorical_cardinalities or {}
-        self.hu = embed_dim  # 严格对齐 Git 的 hu
+# class EFIN(nn.Module):
+#     def __init__(self, continuous_dim, categorical_cardinalities, embed_dim=16, 
+#                  hidden_dims=[128, 64, 32], dropout_rate=0.0):
+#         super().__init__()
+#         self.cont_dim = continuous_dim if continuous_dim is not None else 0
+#         self.cat_cards = categorical_cardinalities or {}
+#         self.hu = embed_dim  # 严格对齐 Git 的 hu
         
-        # 1. 虚拟特征路径 (Virtual Split)
-        self.K = self.cont_dim + len(self.cat_cards)
-        if self.cont_dim > 0:
-            self.cont_W = nn.Parameter(torch.empty(self.cont_dim, self.hu))
-            self.cont_b = nn.Parameter(torch.empty(self.cont_dim, self.hu))
-            nn.init.xavier_uniform_(self.cont_W)
-            nn.init.zeros_(self.cont_b)
-        if len(self.cat_cards) > 0:
-            self.cat_embs = nn.ModuleDict({
-                col: nn.Embedding(card, self.hu) for col, card in self.cat_cards.items()
-            })
+#         # 1. 虚拟特征路径 (Virtual Split)
+#         self.K = self.cont_dim + len(self.cat_cards)
+#         if self.cont_dim > 0:
+#             self.cont_W = nn.Parameter(torch.empty(self.cont_dim, self.hu))
+#             self.cont_b = nn.Parameter(torch.empty(self.cont_dim, self.hu))
+#             nn.init.xavier_uniform_(self.cont_W)
+#             nn.init.zeros_(self.cont_b)
+#         if len(self.cat_cards) > 0:
+#             self.cat_embs = nn.ModuleDict({
+#                 col: nn.Embedding(card, self.hu) for col, card in self.cat_cards.items()
+#             })
             
-        # 2. Treatment & Attention 参数
-        self.t_rep_layer = nn.Linear(1, self.hu, bias=False)
+#         # 2. Treatment & Attention 参数
+#         self.t_rep_layer = nn.Linear(1, self.hu, bias=False)
+#         nn.init.xavier_uniform_(self.t_rep_layer.weight)
+        
+#         self.W_q = nn.Linear(self.hu, self.hu, bias=False)
+#         self.W_k = nn.Linear(self.hu, self.hu, bias=False)
+#         self.W_v = nn.Linear(self.hu, self.hu, bias=False)
+#         self.scale = self.hu ** 0.5
+        
+#         self.att1 = nn.Linear(self.hu, self.hu)
+#         self.att2 = nn.Linear(self.hu, self.hu)
+#         self.att3 = nn.Linear(self.hu, 1, bias=False)
+
+#         # 3. 🌟 动态构建 Control MLP (对接大盘 hidden_dims, 维持 ELU)
+#         c_layers = []
+#         curr_dim = self.K * self.hu
+#         for dim in hidden_dims:
+#             c_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
+#             if dropout_rate > 0: c_layers.append(nn.Dropout(dropout_rate))
+#             curr_dim = dim
+#         c_layers.append(nn.Linear(curr_dim, 1))
+#         self.control_mlp = nn.Sequential(*c_layers)
+
+#         # 4. 🌟 动态构建 Uplift Trunk (对接大盘 hidden_dims, 维持 ELU)
+#         u_layers = []
+#         curr_dim = self.hu
+#         for dim in hidden_dims:
+#             u_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
+#             if dropout_rate > 0: u_layers.append(nn.Dropout(dropout_rate))
+#             curr_dim = dim
+#         self.uplift_trunk = nn.Sequential(*u_layers)
+        
+#         # 5. 同源的 Uplift 与 Intervention 头
+#         self.u_tau_head = nn.Linear(curr_dim, 1)
+#         self.intervention_head = nn.Linear(curr_dim, 1)
+
+#     def forward(self, x_cont, x_cat):
+#         device = next(self.parameters()).device
+#         B = x_cont.shape[0] if x_cont is not None else x_cat[list(x_cat.keys())[0]].shape[0]
+        
+#         # 特征编码
+#         feat_embs = []
+#         if self.cont_dim > 0 and x_cont is not None:
+#             cont_e = x_cont.unsqueeze(-1) * self.cont_W.unsqueeze(0) + self.cont_b.unsqueeze(0)
+#             feat_embs.append(cont_e)
+#         if len(self.cat_cards) > 0 and x_cat is not None:
+#             cat_e = [self.cat_embs[col](x_cat[col]).unsqueeze(1) for col in self.cat_cards.keys()]
+#             feat_embs.append(torch.cat(cat_e, dim=1))
+#         x_rep = torch.cat(feat_embs, dim=1) 
+        
+#         # Self-Attention
+#         x_rep_norm = F.normalize(x_rep, p=2, dim=-1)
+#         Q, K, V = self.W_q(x_rep_norm), self.W_k(x_rep_norm), self.W_v(x_rep_norm)
+#         scores = torch.sigmoid(torch.matmul(Q, K.transpose(-1, -2)) / self.scale)
+#         attn_weights = F.softmax(scores, dim=-1)
+#         attn_out = torch.matmul(attn_weights, V)
+#         y0_logit = self.control_mlp(attn_out.reshape(B, -1)).squeeze(-1)
+        
+#         # Interaction Attention
+#         ones_t = torch.ones((B, 1), dtype=torch.float32, device=device)
+#         t_rep = self.t_rep_layer(ones_t)
+#         t_part = torch.sigmoid(self.att1(t_rep)).unsqueeze(1)
+#         x_part = torch.sigmoid(self.att2(x_rep))
+#         alpha = F.softmax(self.att3(F.relu(t_part + x_part)), dim=1)
+#         e_xt = torch.sum(alpha * x_rep, dim=1)
+        
+#         # 同源分叉 & Stop_grad
+#         uplift_hidden = self.uplift_trunk(e_xt)
+#         u_tau = self.u_tau_head(uplift_hidden).squeeze(-1)
+#         t_logit = self.intervention_head(uplift_hidden).squeeze(-1)
+#         y1_logit = y0_logit.detach() + u_tau
+        
+#         return y0_logit, y1_logit, {"efin_t_logit": t_logit}
+
+# =========================================================================
+# 🌟 官方 Git / Rankzoo 级别完美对齐复刻: EFIN (Uplift 拓扑两路分叉独立网络)
+# =========================================================================
+# =========================================================================
+# 🌟 官方 Git / Rankzoo 级别完美对齐复刻: EFIN (Uplift 拓扑两路分叉独立网络)
+# =========================================================================
+class EFIN(nn.Module):
+    """
+    EFIN 官方规格书标准对齐版 (彻底移除任何伪参数，K 由输入特征总列数自动物理推导)。
+    拓扑结构：
+    φ -> x_rep [B, K, R]
+         ├─ Control:  L2norm -> SelfAttn -> flatten(K·R) -> c_MLP -> c_logit
+         └─ Uplift:   t_rep(ones) + InteractionAttn(·, x_rep) -> u_MLP -> t_logit, u_tau
+    """
+    def __init__(self, continuous_dim: int, categorical_cardinalities: dict, 
+                 efin_rank: int = 64, dropout_rate: float = 0.0):
+        super().__init__()
+        
+        self.R = efin_rank  # 唯一隐藏层宽度控制旋钮 (R)
+        
+        # 👑 物理铁律：K 严格等于原始连续特征维数 + 离散特征组数，无需从外部传伪参数
+        categorical_cardinalities = categorical_cardinalities or {}
+        self.K = continuous_dim + len(categorical_cardinalities)
+        
+        # 基础组件：特征编码器
+        self.base_encoder = FeatureEncoder(continuous_dim, categorical_cardinalities)
+        input_dim = self.base_encoder.output_dim
+        
+        # 虚拟特征块投影矩阵 (将展平特征 φ 分离切成 K 个独立的虚拟特征块 [B, K, R])
+        self.virtual_projectors = nn.ModuleList([
+            nn.Linear(input_dim, self.R) for _ in range(self.K)
+        ])
+        
+        # -----------------------------------------------------------------
+        # 🟢 Control 分支 (自然响应通路 μ0)
+        # -----------------------------------------------------------------
+        # 专属 Self-Attention: softmax(sigmoid(QK^T/√d))
+        self.W_q = nn.Linear(self.R, self.R, bias=False)
+        self.W_k = nn.Linear(self.R, self.R, bias=False)
+        self.W_v = nn.Linear(self.R, self.R, bias=False)
+        self.scale = self.R ** 0.5
+        
+        # Control MLP 漏斗拓扑: 宽度按 R 比例逐渐收缩 (K·R -> R -> R -> R/2 -> R/4)
+        self.control_mlp = nn.Sequential(
+            nn.Linear(self.K * self.R, self.R),
+            nn.ELU(),
+            nn.Linear(self.R, self.R),
+            nn.ELU(),
+            nn.Linear(self.R, max(16, self.R // 2)),
+            nn.ELU(),
+            nn.Linear(max(16, self.R // 2), max(8, self.R // 4)),
+            nn.ELU()
+        )
+        self.c_logit_head = nn.Linear(max(8, self.R // 4), 1)
+        
+        # -----------------------------------------------------------------
+        # 🔵 Uplift 分支 (增量响应通路 τ + 倾向分约束 t_logit)
+        # -----------------------------------------------------------------
+        # 虚拟 Treatment 特征生成层: 输入全 1 虚拟向量
+        self.t_rep_layer = nn.Linear(1, self.R, bias=False)
         nn.init.xavier_uniform_(self.t_rep_layer.weight)
         
-        self.W_q = nn.Linear(self.hu, self.hu, bias=False)
-        self.W_k = nn.Linear(self.hu, self.hu, bias=False)
-        self.W_v = nn.Linear(self.hu, self.hu, bias=False)
-        self.scale = self.hu ** 0.5
+        # 专属 Interaction Attention 映射参数 (三个网络全共享)
+        self.att1 = nn.Linear(self.R, self.R)
+        self.att2 = nn.Linear(self.R, self.R)
+        self.att3 = nn.Linear(self.R, 1, bias=False)
         
-        self.att1 = nn.Linear(self.hu, self.hu)
-        self.att2 = nn.Linear(self.hu, self.hu)
-        self.att3 = nn.Linear(self.hu, 1, bias=False)
-
-        # 3. 🌟 动态构建 Control MLP (对接大盘 hidden_dims, 维持 ELU)
-        c_layers = []
-        curr_dim = self.K * self.hu
-        for dim in hidden_dims:
-            c_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
-            if dropout_rate > 0: c_layers.append(nn.Dropout(dropout_rate))
-            curr_dim = dim
-        c_layers.append(nn.Linear(curr_dim, 1))
-        self.control_mlp = nn.Sequential(*c_layers)
-
-        # 4. 🌟 动态构建 Uplift Trunk (对接大盘 hidden_dims, 维持 ELU)
-        u_layers = []
-        curr_dim = self.hu
-        for dim in hidden_dims:
-            u_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
-            if dropout_rate > 0: u_layers.append(nn.Dropout(dropout_rate))
-            curr_dim = dim
-        self.uplift_trunk = nn.Sequential(*u_layers)
-        
-        # 5. 同源的 Uplift 与 Intervention 头
-        self.u_tau_head = nn.Linear(curr_dim, 1)
-        self.intervention_head = nn.Linear(curr_dim, 1)
+        # Uplift MLP 漏斗拓扑: 接收聚合敏感特征后的 e_xt 表征层 (R -> R -> R/2 -> R/4)
+        self.uplift_trunk = nn.Sequential(
+            nn.Linear(self.R, self.R),
+            nn.ELU(),
+            nn.Linear(self.R, self.R),
+            nn.ELU(),
+            nn.Linear(self.R, max(16, self.R // 2)),
+            nn.ELU(),
+            nn.Linear(max(16, self.R // 2), max(8, self.R // 4)),
+            nn.ELU()
+        )
+        # 同源分叉输出头
+        self.u_tau_head = nn.Linear(max(8, self.R // 4), 1)
+        self.intervention_head = nn.Linear(max(8, self.R // 4), 1)
 
     def forward(self, x_cont, x_cat):
-        device = next(self.parameters()).device
+        device = x_cont.device if x_cont is not None else next(self.parameters()).device
         B = x_cont.shape[0] if x_cont is not None else x_cat[list(x_cat.keys())[0]].shape[0]
         
-        # 特征编码
-        feat_embs = []
-        if self.cont_dim > 0 and x_cont is not None:
-            cont_e = x_cont.unsqueeze(-1) * self.cont_W.unsqueeze(0) + self.cont_b.unsqueeze(0)
-            feat_embs.append(cont_e)
-        if len(self.cat_cards) > 0 and x_cat is not None:
-            cat_e = [self.cat_embs[col](x_cat[col]).unsqueeze(1) for col in self.cat_cards.keys()]
-            feat_embs.append(torch.cat(cat_e, dim=1))
-        x_rep = torch.cat(feat_embs, dim=1) 
+        # 1. 基础展平编码 [B, Raw_Dim]
+        phi = self.base_encoder(x_cont, x_cat)
         
-        # Self-Attention
+        # 2. 物理划分 K 块，构建标准的虚拟特征表达阵列 [B, K, R]
+        x_rep = torch.stack([proj(phi) for proj in self.virtual_projectors], dim=1)
+        
+        # =================================================================
+        # 🟢 Control 分支前向 (物理 L2 Norm + 特异 Self-Attn)
+        # =================================================================
+        # L2 归一化锁死特征
         x_rep_norm = F.normalize(x_rep, p=2, dim=-1)
-        Q, K, V = self.W_q(x_rep_norm), self.W_k(x_rep_norm), self.W_v(x_rep_norm)
+        
+        # 执行 Softmax(Sigmoid(QK^T/√d))
+        Q = self.W_q(x_rep_norm)
+        K = self.W_k(x_rep_norm)
+        V = self.W_v(x_rep_norm)
+        
         scores = torch.sigmoid(torch.matmul(Q, K.transpose(-1, -2)) / self.scale)
         attn_weights = F.softmax(scores, dim=-1)
-        attn_out = torch.matmul(attn_weights, V)
-        y0_logit = self.control_mlp(attn_out.reshape(B, -1)).squeeze(-1)
+        attn_out = torch.matmul(attn_weights, V) # [B, K, R]
         
-        # Interaction Attention
+        # 展平并过漏斗 Control MLP -> 得到控制组基线
+        c_hidden = self.control_mlp(attn_out.reshape(B, -1))
+        c_logit = self.c_logit_head(c_hidden).squeeze(-1)
+        
+        # =================================================================
+        # 🔵 Uplift 分支前向 (接原始 x_rep + 虚拟 t_rep 交互)
+        # =================================================================
+        # 构造全 1 虚拟变量，生成标准 e^t 空间 [B, R]
         ones_t = torch.ones((B, 1), dtype=torch.float32, device=device)
         t_rep = self.t_rep_layer(ones_t)
-        t_part = torch.sigmoid(self.att1(t_rep)).unsqueeze(1)
-        x_part = torch.sigmoid(self.att2(x_rep))
-        alpha = F.softmax(self.att3(F.relu(t_part + x_part)), dim=1)
-        e_xt = torch.sum(alpha * x_rep, dim=1)
         
-        # 同源分叉 & Stop_grad
+        # Interaction Attn 接收【原始 x_rep】，绝对不碰 Control 路的特征
+        t_part = torch.sigmoid(self.att1(t_rep)).unsqueeze(1) # [B, 1, R]
+        x_part = torch.sigmoid(self.att2(x_rep))              # [B, K, R]
+        
+        # 多门控加权聚合 -> 炼出敏感特征 e_xt [B, R]
+        alpha = F.softmax(self.att3(F.relu(t_part + x_part)), dim=1) # [B, K, 1]
+        e_xt = torch.sum(alpha * x_rep, dim=1)                       # [B, R]
+        
+        # 送入 Uplift 骨架，并在最末层同源双分叉
         uplift_hidden = self.uplift_trunk(e_xt)
         u_tau = self.u_tau_head(uplift_hidden).squeeze(-1)
         t_logit = self.intervention_head(uplift_hidden).squeeze(-1)
-        y1_logit = y0_logit.detach() + u_tau
         
+        # =================================================================
+        # 👑 结果融合空间 (严格执行控制组 logit 分支梯度阻断，保护增量稳定性)
+        # =================================================================
+        y0_logit = c_logit
+        y1_logit = c_logit.detach() + u_tau
+        
+        # 返回标准格式，回传倾向分类器约束 logit 供损失函数捕获
         return y0_logit, y1_logit, {"efin_t_logit": t_logit}
-
-
 
 # ==========================================
 # 🎯 经典基线: S-Learner (Single Learner)

@@ -298,27 +298,34 @@ def compute_stage3_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config, d
         mask_gold = (treatment == 1) & (targets == 1)    # 隐藏金子
         mask_walkin = (treatment == 0) & (targets == 1)  # Walk-in
         
-        # 3. 计算纯静态大棒权重 static_weights
+        # 3. 计算纯静态大棒权重 static_weights，并用 has_conflict 记录当前哪些样本真正被当前 mode 激活了
+        # 🌟 保持稳定的 Float32 底座
         static_weights = torch.zeros_like(targets, dtype=torch.float)
+        has_conflict = torch.zeros_like(targets, dtype=torch.bool)
+        
+        # 🌟 绝杀修复：在切片赋值右侧统一追加 .float()，强行把 autocast 的 float16 提升为 float32！
         if (mode == "all" or "wool" in mode) and mask_wool.any():
-            static_weights[mask_wool] = alpha_wool * pi_01[mask_wool]
+            static_weights[mask_wool] = (alpha_wool * pi_01[mask_wool]).float()
+            has_conflict[mask_wool] = True
             
         if (mode == "all" or "gold" in mode) and mask_gold.any():
-            static_weights[mask_gold] = alpha_gold * (1.0 - pi_01[mask_gold])
+            static_weights[mask_gold] = (alpha_gold * (1.0 - pi_01[mask_gold])).float()
+            has_conflict[mask_gold] = True
             
         if (mode == "all" or "walkin" in mode) and mask_walkin.any():
-            static_weights[mask_walkin] = alpha_walkin * pi_01[mask_walkin]
+            static_weights[mask_walkin] = (alpha_walkin * pi_01[mask_walkin]).float()
+            has_conflict[mask_walkin] = True
             
-        # 4. 核心实现：实验 3 - Focal 逻辑
-        p_final = torch.sigmoid(y_pred_observed).detach() 
+        # 4. 🌟 Focal 截断托底逻辑安全加固 🌟
+        # 🌟 同样在这里追加 .float()，保证后向计算梯度和权重归一化时数据精度绝对纯净
+        p_final = torch.sigmoid(y_pred_observed).detach().float() 
         
         if focal_type == "none":
-            # 基础不截断版本
             weights += static_weights
         elif focal_type == "global_bounded":
-            # 全局托底硬截断版
             raw_focal_w = 1.0 + static_weights * torch.pow(1.0 - p_final, gamma)
-            weights = torch.clamp(raw_focal_w, min=global_margin)
+            focal_weights = torch.clamp(raw_focal_w, min=global_margin)
+            weights = torch.where(has_conflict, focal_weights, torch.ones_like(weights))
             
         # 5. 核心实现：实验 4 - 在线困难样本挖掘 (OHEM for V10)
         if use_ohem:
@@ -684,12 +691,12 @@ def compute_efin_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config):
     loss_c = F.binary_cross_entropy_with_logits(t_constraint_logit, inverse_treatment)
     
     # 3. 总 Loss 融合
-    lam = config.get("efin_lambda", 0.01) # 权重默认给个 0.01
-    total_loss = loss_y + lam * loss_c
+    # lam = config.get("efin_lambda", 0.01) # 权重默认给个 0.01
+    total_loss = loss_y + loss_c
     
     loss_components = {
         "efin_loss_y": loss_y.item(), 
-        "efin_loss_c": (lam * loss_c).item()
+        "efin_loss_c": (loss_c).item()
     }
     
     return total_loss, loss_components

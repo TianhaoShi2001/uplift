@@ -48,51 +48,63 @@ def safe_report(metrics, mode="tune"):
 # ==========================================
 # 🏗️ 动态模型构建中心 (补齐公平 Head 容量与实验参数透传版)
 # ==========================================
+# =========================================================================
+# 🏗️ 动态模型构建中心 (致命 Bug 紧急修复：全局提权实例化 model_c 版)
+# =========================================================================
 def build_model(config, data_spec, device):
     cont_dim = len(data_spec["feature_cols"]) - len(data_spec.get("categorical_cols", []))
     cat_cards = data_spec.get("categorical_cardinalities", {})
     model_type = config.get("model", "TARNET")
     
-    # 🌟 核心新增：全局捕获非线性预测头的深度配置 (默认 None 则退化为裸 Linear)
+    # 全局捕获非线性预测头的深度配置 (默认 None 则退化为裸 Linear)
     head_hidden_dims = config.get("head_hidden_dims", None)
 
+    # 👑 核心修复：把 model_c 的影子克隆和图纸加载逻辑提到全局最顶部！
+    # 只要不是纯 train_c 任务，且不是不需要 C 的 MTMT/ECUP 等原生多任务，都可能需要加载 model_c
+    model_c = None
+    if config["task"] == "train_y" and model_type in ["TARNET", "TARNET_Baseline_PureV10"]:
+        c_path = config.get("c_ckpt_path")
+        
+        # 默认用 Y 的参数底座作为默认图纸
+        c_hidden_dims = config["hidden_dims"]
+        c_dropout_rate = config["dropout_rate"]
+        
+        # 靶向防御：如果 C 的 best_config.json 存在，强制精准读取 C 的图纸！
+        if c_path and os.path.exists(c_path):
+            c_config_path = c_path.replace("best_model.pth", "best_config.json")
+            if os.path.exists(c_config_path):
+                try:
+                    with open(c_config_path, 'r') as f:
+                        c_cfg = json.load(f)
+                        c_hidden_dims = c_cfg.get("hidden_dims", c_hidden_dims)
+                        c_dropout_rate = c_cfg.get("dropout_rate", c_dropout_rate)
+                except Exception:
+                    pass
+        
+        # 精准实例化 C 模型空壳并推向指定 GPU
+        model_c = TARNET_Baseline(
+            continuous_dim=cont_dim, 
+            categorical_cardinalities=cat_cards, 
+            hidden_dims=c_hidden_dims, 
+            dropout_rate=c_dropout_rate
+        ).to(device)
+        
+        # 强行灌入 C 模型权重
+        if c_path and os.path.exists(c_path):
+            model_c.load_state_dict(torch.load(c_path, map_location=device))
+
+    # -----------------------------------------------------------------
+    # 分支一：传统的 TARNET 基线或 Ours 前向流系列
+    # -----------------------------------------------------------------
     if model_type == "TARNET":
         if config["task"] == "train_c":
             return TARNET_Baseline(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"]).to(device)
             
         elif config["task"] == "train_y":
-            c_path = config.get("c_ckpt_path")
-            
-            # 🌟 默认用 Y 的参数，但如果有 C 的 config，就强制用 C 的！
-            c_hidden_dims = config["hidden_dims"]
-            c_dropout_rate = config["dropout_rate"]
-            
-            if c_path and os.path.exists(c_path):
-                # 去找 C 的那张 best_config.json 图纸
-                c_config_path = c_path.replace("best_model.pth", "best_config.json")
-                if os.path.exists(c_config_path):
-                    with open(c_config_path, 'r') as f:
-                        c_cfg = json.load(f)
-                        c_hidden_dims = c_cfg.get("hidden_dims", c_hidden_dims)
-                        c_dropout_rate = c_cfg.get("dropout_rate", c_dropout_rate)
-            
-            # 🌟 用正确的 C 图纸来构建 C 的空壳
-            model_c = TARNET_Baseline(
-                continuous_dim=cont_dim, 
-                categorical_cardinalities=cat_cards, 
-                hidden_dims=c_hidden_dims, 
-                dropout_rate=c_dropout_rate
-            ).to(device)
-            
-            if c_path and os.path.exists(c_path):
-                model_c.load_state_dict(torch.load(c_path, map_location=device))
-                
-            # --- 以下是融合和打擂台分支的参数完美透传 ---
             if config.get("c_fusion_mode") == "moe":
                 return TARNET_MoE(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], c_model=model_c, head_hidden_dims=head_hidden_dims).to(device)
                 
             elif config.get("c_fusion_mode") == "res_moe": 
-                # 🌟 V6 / 纯 V10 突围形态：透传 head_hidden_dims
                 return TARNET_Residual_MoE(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], c_model=model_c, head_hidden_dims=head_hidden_dims).to(device)
                 
             elif config.get("c_fusion_mode") == "v7_truncated_moe":
@@ -113,44 +125,46 @@ def build_model(config, data_spec, device):
                     v11_scheme=config.get("v11_scheme", 4), align_type=config.get("align_type", "lift"), align_temp=config.get("align_temp", 1.0)
                 ).to(device)
                 
-            # 🌟🌟🌟 核心对齐：Ours S4 独立实例构建 🌟🌟🌟
             elif config.get("c_fusion_mode") == "ours_s4_conflict":
                 return TARNET_Ours_S4_Conflict(
                     continuous_dim=cont_dim, categorical_cardinalities=cat_cards, 
                     hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], 
                     c_model=model_c, embedding_dim=8,
-                    head_hidden_dims=head_hidden_dims, # 透传公平深度
-                    ours_s4_use_stop_grad=config.get("ours_s4_use_stop_grad", False) # 透传一键阻断开关
+                    head_hidden_dims=head_hidden_dims, 
+                    ours_s4_use_stop_grad=config.get("ours_s4_use_stop_grad", False) 
                 ).to(device)
                 
-            # 🌟🌟🌟 核心对齐：Ours S6 独立实例构建 🌟🌟🌟
             elif config.get("c_fusion_mode") == "ours_s6_conflict":
                 return TARNET_Ours_S6_Conflict(
                     continuous_dim=cont_dim, categorical_cardinalities=cat_cards, 
                     hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], 
                     c_model=model_c, embedding_dim=8,
                     ours_s6_temp=config.get("ours_s6_temp", 1.0),
-                    head_hidden_dims=head_hidden_dims, # 透传公平深度
-                    ours_s6_use_stop_grad=config.get("ours_s6_use_stop_grad", False), # 透传一键阻断
-                    ours_s6_use_logit_clamp=config.get("ours_s6_use_logit_clamp", False), # 透传一键裁剪
+                    head_hidden_dims=head_hidden_dims, 
+                    ours_s6_use_stop_grad=config.get("ours_s6_use_stop_grad", False), 
+                    ours_s6_use_logit_clamp=config.get("ours_s6_use_logit_clamp", False), 
                     ours_s6_clamp_val=config.get("ours_s6_clamp_val", 2.0)
                 ).to(device)
                 
             else:
                 return TARNET_Proposed(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], c_fusion_mode=config["c_fusion_mode"], c_embedding_dim=config.get("c_embedding_dim", 4), c_model=model_c, head_hidden_dims=head_hidden_dims).to(device)
-                
+
+    # -----------------------------------------------------------------
+    # 分支二：🌟 纯 V10 突围战形态（现在可以绝对安全、完美咬合地拿到顶部的 model_c 了！）
+    # -----------------------------------------------------------------
     elif model_type == "TARNET_Baseline_PureV10":
-        # 🌟 强力纠正：纯 V10 必须在拥有完全相同大底座的 Residual_MoE 下单兵突围！
-        # 这样它和 Ours S4/S6 的参数量、Base骨架才叫物理上 1:1 绝对镜像对齐。
         return TARNET_Residual_MoE(
             continuous_dim=cont_dim, 
             categorical_cardinalities=cat_cards, 
             hidden_dims=config["hidden_dims"], 
             dropout_rate=config["dropout_rate"], 
-            c_model=model_c, 
-            head_hidden_dims=head_hidden_dims # 镜像补齐深层 Head 容量
+            c_model=model_c,              # 👑 安全引渡，绝不报错
+            head_hidden_dims=head_hidden_dims 
         ).to(device)
 
+    # -----------------------------------------------------------------
+    # 其他常规公开 baseline 维持原样
+    # -----------------------------------------------------------------
     elif model_type == "MTMT":
         return MTMT_STMT(
             continuous_dim=cont_dim, categorical_cardinalities=cat_cards, num_experts=config.get("num_experts", 4), expert_type=config.get("expert_type", "mlp"), expert_hidden_dims=config.get("expert_hidden_dims", [64]), dropout_rate=config.get("dropout_rate", 0.1), t_emb_dim=config.get("t_emb_dim", 16) 
@@ -172,9 +186,16 @@ def build_model(config, data_spec, device):
     elif model_type == "EUEN":
         return EUEN(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config.get("hidden_dims", [128, 64])).to(device)
     elif model_type == "EFIN":
-        embed_dim = config.get("efin_embed_dim", 16)
-        hidden_dims = config.get("hidden_dims", [128, 64])
-        return EFIN(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, embed_dim=embed_dim, hidden_dims=hidden_dims).to(device)
+        # 🌟 核心修改：剔除大盘通用的 config.get("hidden_dims")，只认 efin_embed_dim 作为唯一隐藏宽度！
+        # 如果 search_space 传进来的是 efin_embed_dim，则用它，否则默认兜底 64。
+        efin_rank = config.get("efin_embed_dim", 64)
+        
+        return EFIN(
+            continuous_dim=cont_dim, 
+            categorical_cardinalities=cat_cards, 
+            efin_rank=efin_rank,
+            dropout_rate=config.get("dropout_rate", 0.0)
+        ).to(device)
     elif model_type == "DESCN":
         return DESCN(
             continuous_dim=cont_dim, categorical_cardinalities=cat_cards, shared_dims=config.get("hidden_dims", [128]), tower_dims=config.get("hidden_dims", [128])
