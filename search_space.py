@@ -61,7 +61,10 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
         "learning_rate": tune.grid_search([1e-3]),
         "weight_decay": tune.grid_search([1e-6, 1e-5, 1e-4, 1e-3, 1e-2]),
         # "hidden_dims": tune.grid_search([[128, 64, 32]]),
-        "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+        "hidden_dims": tune.grid_search([[128, 64, 32]]), # tune.grid_search([[128, 64, 32]]),
+        # tune.grid_search([[128, 64, 32]]), [64], [64, 32], 
+        #   tune.grid_search([[64], [64, 32], [128, 64, 32]]),
+        # tune.grid_search([[128, 64, 32]]), 
         # tune.grid_search([[64], [64, 32], [128, 64, 32]]),
         #  尝试中间版本的时候删掉64 和 64 32，提速度。
         "dropout_rate": tune.grid_search([0.0]),
@@ -122,10 +125,17 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "model": tune.grid_search(["EUEN"]),
                 # EUEN 纯靠显式预估，通常不需要加各种复杂的损失权重
             })
-        elif version == "y_baseline_efin":
-            space.update({
-                "model": tune.grid_search(["EFIN"]),
-            })
+        # elif version == "y_baseline_efin":
+        #     space.update({
+        #         "model": tune.grid_search(["EFIN"]),
+        #         "efin_embed_dim": tune.grid_search([16, 32]), 
+        #         "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), 
+            # })
+
+        # elif version == "y_baseline_efin":
+        #     space.update({
+        #         "model": tune.grid_search(["EFIN"]),
+        #     })
         # elif version == "c_v3_mmd":
         #     space.update({
         #         "focal_gamma": tune.grid_search([0.0]),      # 拿上一轮表现不错的值固定住
@@ -167,7 +177,13 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
         elif version == "y_baseline_efin":
             space.update({
                 "model": tune.grid_search(["EFIN"]),
-                "efin_embed_dim": tune.grid_search([32, 64, 128]), # 
+                "efin_embed_dim": tune.grid_search([32]), # tune.grid_search([32, 64, 128]), # 
+                "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
+            })
+        elif version == "y_baseline_efin_64":
+            space.update({
+                "model": tune.grid_search(["EFIN"]),
+                "efin_embed_dim": tune.grid_search([64]), # tune.grid_search([32, 64, 128]), # 
                 "efin_lambda": tune.grid_search([1e-3, 1e-2, 1e-1]), # Eq.2 的 tradeoff 参数 \lambda
             })
         # 🟢 经典基线: CFRNet
@@ -183,11 +199,16 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
             space.update({
                 "model": tune.grid_search(["CFRNet"]),
                 # 搜一下 SWD 对齐的力度，这个参数对 CFRNet 的效果影响极其致命
-                "cfr_weight": tune.grid_search([ 0, 0.001, 0.01, 0.1, 1.0]), 
+                "cfr_weight": tune.grid_search([ 0.001, 0.01, 0.1, 1.0]), 
                 "hidden_dims":tune.grid_search([[64], [64, 32], [128, 64, 32]]),
             })
             # "hidden_dims": tune.grid_search([[128, 64, 32]]), 
-            
+        elif version == "y_baseline_euen_academic_ms":
+            space.update({
+                "model": tune.grid_search(["EUEN_Academic"]),
+                # "hidden_dims": tune.grid_search([[128, 64]]), # 显式锚定 TF 四档最稳核心配置
+                "loss_types": tune.grid_search([["bce"]]),    # 纯净二值 BCE，不回灌辅助 loss
+            })
         
         # 🟢 全空间联合建模: DESCN (KDD'22)
         elif version == "y_baseline_descn":
@@ -195,7 +216,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "model": tune.grid_search(["DESCN"]),
                 # "hidden_dims": tune.grid_search([[128]]), # 遵从论文 4.4 节设定
                 # DESCN 的多任务权重，先保持 1.0 Baseline，gamma 可以轻微扰动
-                "descn_alpha": tune.grid_search([1.0]), 
+                "descn_alpha": tune.grid_search([0.5]), 
                 "descn_beta1": tune.grid_search([1.0]),
                 "descn_beta0": tune.grid_search([1.0]),
                 
@@ -204,7 +225,30 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "descn_gamma1": tune.grid_search([0.5, 1.0]), 
                 "descn_gamma0": tune.grid_search([0.1, 0.5]),
             })
-
+    # ==========================================================
+        # 🌟 Ours 核心架构二: y_ours_s6_conflict 温度独立命名阵列
+        # ==========================================================
+        elif version == "y_ours_s4_conflict":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_alpha": tune.grid_search([0, 0.01,0.1, 0.5, 1.0, 5.0, 10]),
+                "conflict_mode": tune.grid_search(["both"]),
+            })
+        elif version == "y_ours_s6_conflict_temp1.0":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([1.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
+            
+        elif version == "y_ours_s6_conflict_temp5.0":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([5.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
+            
+        elif version == "y_ours_s6_conflict_temp10.0":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([10.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
+            
+        elif version == "y_ours_s6_conflict_temp20.0":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([20.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10])})
+            
+        elif version == "y_ours_s6_conflict_temp50.0":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s6_conflict"]), "conflict_mode": tune.grid_search(["both"]), "loss_types": tune.grid_search([["prior_conflict"]]), "ours_s6_temp": tune.grid_search([5.0]), "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0])})
         # 🟡 版本 2：Base + EMB 融合 (只加底层特征拼接，不改 Loss)
         elif version == "y_v2_emb":
             space.update({
@@ -462,6 +506,19 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "conflict_mode": tune.grid_search(["both"]),
                 "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0, 10]),
             })
+        elif version == "y_v10_conflict_all_walkin0705":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_mode": tune.grid_search(["both"]),
+                "conflict_alpha": tune.grid_search([0.01, 0.1, 0.5, 1.0, 5.0, 10]),
+            })
+        elif version == "y_ours_s4_conflict_dim64":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s4_conflict"]), "loss_types": tune.grid_search([["prior_conflict"]]), "hidden_dims": tune.grid_search([[64]]), "conflict_mode": tune.grid_search(["both"]), "conflict_alpha": tune.grid_search([0, 0.01, 0.1, 0.5, 1.0, 5.0, 10])})
+        elif version == "y_ours_s4_conflict_dim64_32":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s4_conflict"]), "loss_types": tune.grid_search([["prior_conflict"]]), "hidden_dims": tune.grid_search([[64, 32]]), "conflict_mode": tune.grid_search(["both"]), "conflict_alpha": tune.grid_search([0, 0.01, 0.1, 0.5, 1.0, 5.0, 10])})
+        elif version == "y_ours_s4_conflict_dim128_64_32":
+            space.update({"c_fusion_mode": tune.grid_search(["ours_s4_conflict"]), "loss_types": tune.grid_search([["prior_conflict"]]), "hidden_dims": tune.grid_search([[128, 64, 32]]), "conflict_mode": tune.grid_search(["both"]), "conflict_alpha": tune.grid_search([0, 0.01, 0.1, 0.5, 1.0, 5.0, 10])})
         elif version == "y_v7_conflict_wool":
             space.update({
                 "c_fusion_mode": tune.grid_search(["v7_truncated_moe"]), # 🌟 开启 V7 结构
@@ -481,7 +538,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "truncation_pct": tune.grid_search([0.05]), 
                 "loss_types": tune.grid_search([["prior_conflict"]]),
                 "conflict_mode": tune.grid_search(["gold_only"]),        # V10 专属: 仅奖励隐藏金子
-                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0]),
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10]),
             })
             
         elif version == "y_v7_conflict_both":
@@ -492,7 +549,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "truncation_pct": tune.grid_search([0.05]), 
                 "loss_types": tune.grid_search([["prior_conflict"]]),
                 "conflict_mode": tune.grid_search(["both"]),             # V10 专属: 双向全面纠偏
-                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0]),
+                "conflict_alpha": tune.grid_search([1.0, 3.0, 5.0,10]),
             })
         elif version == "y_v7_dro_a_coarse":
             space.update({

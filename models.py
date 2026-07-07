@@ -643,13 +643,17 @@ class TARNET_Naive_MT(nn.Module):
 # ==========================================
 # 骨架 1: 纯净基线模型 (用于 Stage 1 的 Model C)
 # ==========================================
+# ==========================================
+# 骨架 1: 纯净基线模型 (用于 Stage 1 的 Model C 或 纯 V10 突围战)
+# ==========================================
 class TARNET_Baseline(nn.Module):
     """
-    用途：训 C 时的 Backbone。或者不加 C 信息的纯 Y 基线。
+    用途：训 C 时的 Backbone。或者不加 C 信息的纯 Y 基线 / 纯 V10 突围网络。
     🌟 核心：输出底层的 shared_emb (即 Z_c) 交给 losses.py 里的 mmd_loss！
     """
     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
-                 hidden_dims: list, dropout_rate: float, embedding_dim: int = 8):
+                 hidden_dims: list, dropout_rate: float, embedding_dim: int = 8,
+                 head_hidden_dims: list = None): # 🌟 核心新增：支持配置独立的非线性预测头（Head）
         super().__init__()
         self.encoder = FeatureEncoder(continuous_dim, categorical_cardinalities, embedding_dim)
         
@@ -662,8 +666,31 @@ class TARNET_Baseline(nn.Module):
             curr_dim = h_dim
         
         self.shared_layers = nn.Sequential(*layers)
-        self.head_0 = nn.Linear(curr_dim, 1)
-        self.head_1 = nn.Linear(curr_dim, 1)
+        
+        # 🌟 核心改进：补齐 Head，如果提供了 head_hidden_dims，则升级为完整的 MLP 塔
+        if head_hidden_dims and len(head_hidden_dims) > 0:
+            # 1. 独立构建自然响应 Y0 预测塔
+            h0_layers = []
+            c_dim = curr_dim
+            for dim in head_hidden_dims:
+                h0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                c_dim = dim
+            h0_layers.append(nn.Linear(c_dim, 1))
+            self.head_0 = nn.Sequential(*h0_layers)
+            
+            # 2. 独立构建干预响应 Y1 预测塔
+            h1_layers = []
+            c_dim = curr_dim
+            for dim in head_hidden_dims:
+                h1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                c_dim = dim
+            h1_layers.append(nn.Linear(c_dim, 1))
+            self.head_1 = nn.Sequential(*h1_layers)
+            
+        else:
+            # 裸 Logit 头（保持原有向后兼容）
+            self.head_0 = nn.Linear(curr_dim, 1)
+            self.head_1 = nn.Linear(curr_dim, 1)
 
     def forward(self, x_cont, x_cat):
         x = self.encoder(x_cont, x_cat)
@@ -687,7 +714,8 @@ class TARNET_Proposed(nn.Module):
     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
                  hidden_dims: list, dropout_rate: float, 
                  c_fusion_mode: str = "joint_emb", c_embedding_dim: int = 4, 
-                 c_model: nn.Module = None, embedding_dim: int = 8):
+                 c_model: nn.Module = None, embedding_dim: int = 8,
+                 head_hidden_dims: list = None): # 🌟 核心新增：支持配置独立的非线性预测头
         super().__init__()
         self.c_fusion_mode = c_fusion_mode
         self.c_model = c_model
@@ -719,8 +747,27 @@ class TARNET_Proposed(nn.Module):
             curr_dim = h_dim
             
         self.shared_layers = nn.Sequential(*layers)
-        self.head_0 = nn.Linear(curr_dim, 1)
-        self.head_1 = nn.Linear(curr_dim, 1)
+        
+        # 🌟 核心改进：补齐 Proposed Head，支持非线性塔
+        if head_hidden_dims and len(head_hidden_dims) > 0:
+            h0_layers = []
+            c_dim = curr_dim
+            for dim in head_hidden_dims:
+                h0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                c_dim = dim
+            h0_layers.append(nn.Linear(c_dim, 1))
+            self.head_0 = nn.Sequential(*h0_layers)
+            
+            h1_layers = []
+            c_dim = curr_dim
+            for dim in head_hidden_dims:
+                h1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                c_dim = dim
+            h1_layers.append(nn.Linear(c_dim, 1))
+            self.head_1 = nn.Sequential(*h1_layers)
+        else:
+            self.head_0 = nn.Linear(curr_dim, 1)
+            self.head_1 = nn.Linear(curr_dim, 1)
 
     def extract_pi_prior(self, x_cont, x_cat):
         """调用冻结的 C 模型，提取纯净先验"""
@@ -771,19 +818,20 @@ class TARNET_Proposed(nn.Module):
 class TARNET_MoE(TARNET_Proposed):
     """
     彻底重构网络架构。不拼接特征，直接建立三个独立的 Expert 专家塔。
-    用算出的 pi 作为 Gate 门控，动态决定当前样本走哪个网络，实现物理隔离。
+    用算出的 pi 作为 Gate 门控，动态决定当前样本走哪个 network，实现物理隔离。
     """
     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
                  hidden_dims: list, dropout_rate: float, 
-                 c_model: nn.Module = None, embedding_dim: int = 8):
-        # 继承 Proposed 以复用 extract_pi_prior 逻辑，但覆盖其网络结构
+                 c_model: nn.Module = None, embedding_dim: int = 8,
+                 head_hidden_dims: list = None): # 🌟 核心新增：透传给父类，并应用到独立专家头上
+        # 继承 Proposed 以复用 extract_pi_prior 逻辑
         super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, 
                          dropout_rate, c_fusion_mode="none", c_model=c_model, 
-                         embedding_dim=embedding_dim)
+                         embedding_dim=embedding_dim, head_hidden_dims=head_hidden_dims)
         
         input_dim = self.encoder.output_dim
         
-        # 定义生成 Expert 塔的闭包函数
+        # 🌟 核心改进：定义生成带有公平 Head 的 Expert 塔的闭包函数
         def build_expert():
             layers = []
             curr_dim = input_dim
@@ -792,10 +840,32 @@ class TARNET_MoE(TARNET_Proposed):
                 layers.append(nn.ReLU())
                 if dropout_rate > 0: layers.append(nn.Dropout(dropout_rate))
                 curr_dim = h_dim
+            
+            # 判断专家头是否需要加深（保证与 Proposed/Baseline 的容量绝对对齐）
+            if head_hidden_dims and len(head_hidden_dims) > 0:
+                h0_layers = []
+                c_dim = curr_dim
+                for dim in head_hidden_dims:
+                    h0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                    c_dim = dim
+                h0_layers.append(nn.Linear(c_dim, 1))
+                head_0_net = nn.Sequential(*h0_layers)
+                
+                h1_layers = []
+                c_dim = curr_dim
+                for dim in head_hidden_dims:
+                    h1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                    c_dim = dim
+                h1_layers.append(nn.Linear(c_dim, 1))
+                head_1_net = nn.Sequential(*h1_layers)
+            else:
+                head_0_net = nn.Linear(curr_dim, 1)
+                head_1_net = nn.Linear(curr_dim, 1)
+
             return nn.ModuleDict({
                 'shared': nn.Sequential(*layers),
-                'head_0': nn.Linear(curr_dim, 1),
-                'head_1': nn.Linear(curr_dim, 1)
+                'head_0': head_0_net,
+                'head_1': head_1_net
             })
 
         # 实例化三个独立阶层的塔
@@ -855,24 +925,25 @@ class TARNET_MoE(TARNET_Proposed):
         return y0, y1, pi_dict
 
 
-
-
-
 # ==========================================
 # 骨架 4: 残差多头路由模型 (Level 4 - V6 Residual MoE)
+# ==========================================
+# ==========================================
+# 骨架 4: 残差多头路由模型 (Level 4 - V6 Residual MoE - 完美对齐版)
 # ==========================================
 class TARNET_Residual_MoE(TARNET_Proposed):
     """
     V6 终极架构：残差 MoE。
-    解决 V3 参数空间爆炸和小群体(如AT)数据稀疏导致的过拟合问题。
-    主干网络学习大盘 Common 知识，轻量级专家只学习特定人群的偏差 (Residuals)。
+    主干网络学习大盘 Common 知识，轻量级专家学习特定人群的偏差 (Residuals)。
+    🌟 完美对齐改造：残差网路的 Head 深度与 base_head 彻底同步，参数量、非线性容量绝对对齐！
     """
     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
                  hidden_dims: list, dropout_rate: float, 
-                 c_model: nn.Module = None, embedding_dim: int = 8):
+                 c_model: nn.Module = None, embedding_dim: int = 8,
+                 head_hidden_dims: list = None): # 🌟 透传给父类，并重构所有大盘主力头和残差头
         super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, 
                          dropout_rate, c_fusion_mode="none", c_model=c_model, 
-                         embedding_dim=embedding_dim)
+                         embedding_dim=embedding_dim, head_hidden_dims=head_hidden_dims)
         
         input_dim = self.encoder.output_dim
         
@@ -886,26 +957,59 @@ class TARNET_Residual_MoE(TARNET_Proposed):
             curr_dim = h_dim
         self.shared_base = nn.Sequential(*layers)
         
-        # 基座的主力输出头 (预测大盘基准值)
-        self.base_head_0 = nn.Linear(curr_dim, 1)
-        self.base_head_1 = nn.Linear(curr_dim, 1)
+        # 2. 基座的主力输出头 (预测大盘基准值) 适配 head_hidden_dims
+        if head_hidden_dims and len(head_hidden_dims) > 0:
+            bh0_layers = []
+            c_dim = curr_dim
+            for dim in head_hidden_dims:
+                bh0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                c_dim = dim
+            bh0_layers.append(nn.Linear(c_dim, 1))
+            self.base_head_0 = nn.Sequential(*bh0_layers)
+            
+            bh1_layers = []
+            c_dim = curr_dim
+            for dim in head_hidden_dims:
+                bh1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                c_dim = dim
+            bh1_layers.append(nn.Linear(c_dim, 1))
+            self.base_head_1 = nn.Sequential(*bh1_layers)
+        else:
+            self.base_head_0 = nn.Linear(curr_dim, 1)
+            self.base_head_1 = nn.Linear(curr_dim, 1)
 
-        # 2. 轻量级残差专家 (Lightweight Residual Experts)
-        # 不再复制整个庞大的塔，只在 Shared Base 输出后挂载一个小 MLP
+        # 3. 🌟🌟🌟 核心对齐改进：重构残差专家 (Residual Experts) 🌟🌟🌟
+        # 让残差塔的非线性层数和宽度，与上面的主力大盘预测头完全 1:1 镜像对齐
         def build_res_expert():
+            if head_hidden_dims and len(head_hidden_dims) > 0:
+                # 构建对齐的 Y0 残差网络
+                r0_layers = []
+                c_dim = curr_dim
+                for dim in head_hidden_dims:
+                    r0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                    c_dim = dim
+                r0_layers.append(nn.Linear(c_dim, 1))
+                res_0_net = nn.Sequential(*r0_layers)
+                
+                # 构建对齐的 Y1 残差网络
+                r1_layers = []
+                c_dim = curr_dim
+                for dim in head_hidden_dims:
+                    r1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+                    c_dim = dim
+                r1_layers.append(nn.Linear(c_dim, 1))
+                res_1_net = nn.Sequential(*r1_layers)
+            else:
+                # 如果没有传入 head_hidden_dims，则保持极简单层（退化兼容）
+                res_0_net = nn.Linear(curr_dim, 1)
+                res_1_net = nn.Linear(curr_dim, 1)
+
             return nn.ModuleDict({
-                'res_0': nn.Sequential(
-                    nn.Linear(curr_dim, curr_dim // 2), 
-                    nn.ReLU(), 
-                    nn.Linear(curr_dim // 2, 1)
-                ),
-                'res_1': nn.Sequential(
-                    nn.Linear(curr_dim, curr_dim // 2), 
-                    nn.ReLU(), 
-                    nn.Linear(curr_dim // 2, 1)
-                )
+                'res_0': res_0_net,
+                'res_1': res_1_net
             })
 
+        # 实例化三个拥有完美公平非线性容量的对齐残差塔
         self.res_never = build_res_expert()
         self.res_comp = build_res_expert()
         self.res_always = build_res_expert()
@@ -927,7 +1031,7 @@ class TARNET_Residual_MoE(TARNET_Proposed):
         base_y0 = self.base_head_0(shared_emb).squeeze(-1)
         base_y1 = self.base_head_1(shared_emb).squeeze(-1)
         
-        # 3. 专家推理：算出各类人群特有的残差偏移 (Residual Offset)
+        # 3. 专家推理：通过完全对齐的深度 Head 算出各类人群特有的残差偏移 (Residual Offset)
         r0_never = self.res_never['res_0'](shared_emb).squeeze(-1)
         r1_never = self.res_never['res_1'](shared_emb).squeeze(-1)
         
@@ -965,6 +1069,293 @@ class TARNET_Residual_MoE(TARNET_Proposed):
             pi_dict["wb_res_u_always"] = r1_always - r0_always
 
         return y0, y1, pi_dict
+
+# # ==========================================
+# # 骨架 2: 大一统融合模型 (用于 Stage 3 的 Model Y)
+# # 涵盖 Level 1 (Raw Prob) 和 Level 2 (Joint Emb)
+# # ==========================================
+# class TARNET_Proposed(nn.Module):
+#     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
+#                  hidden_dims: list, dropout_rate: float, 
+#                  c_fusion_mode: str = "joint_emb", c_embedding_dim: int = 4, 
+#                  c_model: nn.Module = None, embedding_dim: int = 8):
+#         super().__init__()
+#         self.c_fusion_mode = c_fusion_mode
+#         self.c_model = c_model
+        
+#         # 🛑 极其关键：彻底冻结 C 模型
+#         if self.c_model is not None:
+#             self.c_model.eval()
+#             self.c_model.requires_grad_(False)
+
+#         self.encoder = FeatureEncoder(continuous_dim, categorical_cardinalities, embedding_dim)
+#         input_dim = self.encoder.output_dim
+
+#         # --- 先验注入维度推算 ---
+#         if self.c_model is not None:
+#             if self.c_fusion_mode == "raw_prob":  
+#                 input_dim += 3 # [pi_00, pi_01, pi_11]
+#             elif self.c_fusion_mode == "joint_emb": 
+#                 input_dim += c_embedding_dim
+#                 self.emb_never = nn.Parameter(torch.randn(c_embedding_dim))
+#                 self.emb_comp = nn.Parameter(torch.randn(c_embedding_dim))
+#                 self.emb_always = nn.Parameter(torch.randn(c_embedding_dim))
+
+#         layers = []
+#         curr_dim = input_dim
+#         for h_dim in hidden_dims:
+#             layers.append(nn.Linear(curr_dim, h_dim))
+#             layers.append(nn.ReLU())
+#             if dropout_rate > 0: layers.append(nn.Dropout(dropout_rate))
+#             curr_dim = h_dim
+            
+#         self.shared_layers = nn.Sequential(*layers)
+#         self.head_0 = nn.Linear(curr_dim, 1)
+#         self.head_1 = nn.Linear(curr_dim, 1)
+
+#     def extract_pi_prior(self, x_cont, x_cat):
+#         """调用冻结的 C 模型，提取纯净先验"""
+#         if self.c_model is None:
+#             return None, None, None
+            
+#         with torch.no_grad(): 
+#             c0_logit, c1_logit, _ = self.c_model(x_cont, x_cat)
+#             c0_prob, c1_prob = torch.sigmoid(c0_logit), torch.sigmoid(c1_logit)
+            
+#             # Rubin 主分层概率推导
+#             pi_00 = (1.0 - c1_prob).clamp(min=0.0)      # Never-taker
+#             pi_01 = (c1_prob - c0_prob).clamp(min=0.0)  # Complier
+#             pi_11 = c0_prob                             # Always-taker
+            
+#         return pi_00, pi_01, pi_11
+
+#     def forward(self, x_cont, x_cat):
+#         x_main = self.encoder(x_cont, x_cat)
+#         pi_dict = {}
+#         c_feat = None
+        
+#         if self.c_model is not None:
+#             pi_00, pi_01, pi_11 = self.extract_pi_prior(x_cont, x_cat)
+#             pi_dict = {"p_never": pi_00, "p_complier": pi_01, "p_always": pi_11}
+            
+#             # 特征融合
+#             if self.c_fusion_mode == "raw_prob":
+#                 c_feat = torch.stack([pi_00, pi_01, pi_11], dim=1)
+#             elif self.c_fusion_mode == "joint_emb":
+#                 c_feat = (pi_00.unsqueeze(1) * self.emb_never.unsqueeze(0) +
+#                           pi_01.unsqueeze(1) * self.emb_comp.unsqueeze(0) +
+#                           pi_11.unsqueeze(1) * self.emb_always.unsqueeze(0))
+
+#         x_aug = torch.cat([x_main, c_feat], dim=1) if c_feat is not None else x_main
+        
+#         shared_y = self.shared_layers(x_aug)
+#         y0 = self.head_0(shared_y).squeeze(-1)
+#         y1 = self.head_1(shared_y).squeeze(-1)
+#         if not self.training:
+#             pi_dict["wb_shared_emb"] = shared_y
+#         return y0, y1, pi_dict
+
+
+# # ==========================================
+# # 骨架 3: 因果多头路由模型 (Level 3 - MoE Routing)
+# # ==========================================
+# class TARNET_MoE(TARNET_Proposed):
+#     """
+#     彻底重构网络架构。不拼接特征，直接建立三个独立的 Expert 专家塔。
+#     用算出的 pi 作为 Gate 门控，动态决定当前样本走哪个网络，实现物理隔离。
+#     """
+#     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
+#                  hidden_dims: list, dropout_rate: float, 
+#                  c_model: nn.Module = None, embedding_dim: int = 8):
+#         # 继承 Proposed 以复用 extract_pi_prior 逻辑，但覆盖其网络结构
+#         super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, 
+#                          dropout_rate, c_fusion_mode="none", c_model=c_model, 
+#                          embedding_dim=embedding_dim)
+        
+#         input_dim = self.encoder.output_dim
+        
+#         # 定义生成 Expert 塔的闭包函数
+#         def build_expert():
+#             layers = []
+#             curr_dim = input_dim
+#             for h_dim in hidden_dims:
+#                 layers.append(nn.Linear(curr_dim, h_dim))
+#                 layers.append(nn.ReLU())
+#                 if dropout_rate > 0: layers.append(nn.Dropout(dropout_rate))
+#                 curr_dim = h_dim
+#             return nn.ModuleDict({
+#                 'shared': nn.Sequential(*layers),
+#                 'head_0': nn.Linear(curr_dim, 1),
+#                 'head_1': nn.Linear(curr_dim, 1)
+#             })
+
+#         # 实例化三个独立阶层的塔
+#         self.expert_never = build_expert()
+#         self.expert_comp = build_expert()
+#         self.expert_always = build_expert()
+        
+#         # 删除父类无用的网络层以节省内存
+#         del self.shared_layers
+#         del self.head_0
+#         del self.head_1
+
+#     def forward(self, x_cont, x_cat):
+#         x_main = self.encoder(x_cont, x_cat)
+        
+#         # 1. 向 C 模型要门控权重 (Gate)
+#         pi_00, pi_01, pi_11 = self.extract_pi_prior(x_cont, x_cat)
+#         pi_dict = {"p_never": pi_00, "p_complier": pi_01, "p_always": pi_11}
+        
+#         # 2. 三个专家分别推断
+#         sh_never = self.expert_never['shared'](x_main)
+#         y0_never = self.expert_never['head_0'](sh_never).squeeze(-1)
+#         y1_never = self.expert_never['head_1'](sh_never).squeeze(-1)
+        
+#         sh_comp = self.expert_comp['shared'](x_main)
+#         y0_comp = self.expert_comp['head_0'](sh_comp).squeeze(-1)
+#         y1_comp = self.expert_comp['head_1'](sh_comp).squeeze(-1)
+        
+#         sh_always = self.expert_always['shared'](x_main)
+#         y0_always = self.expert_always['head_0'](sh_always).squeeze(-1)
+#         y1_always = self.expert_always['head_1'](sh_always).squeeze(-1)
+        
+#         # 3. MoE 软路由：利用先验概率进行加权求和
+#         y0 = pi_00 * y0_never + pi_01 * y0_comp + pi_11 * y0_always
+#         y1 = pi_00 * y1_never + pi_01 * y1_comp + pi_11 * y1_always
+        
+#         if not self.training:
+#             # 1. 独立表征
+#             pi_dict["wb_sh_never"] = sh_never
+#             pi_dict["wb_sh_comp"] = sh_comp
+#             pi_dict["wb_sh_always"] = sh_always
+            
+#             # 2. Never-Taker 专家绝对打分
+#             pi_dict["wb_exp_y0_never"] = y0_never
+#             pi_dict["wb_exp_y1_never"] = y1_never
+#             pi_dict["wb_exp_u_never"] = y1_never - y0_never
+            
+#             # 3. Complier 专家绝对打分
+#             pi_dict["wb_exp_y0_comp"] = y0_comp
+#             pi_dict["wb_exp_y1_comp"] = y1_comp
+#             pi_dict["wb_exp_u_comp"] = y1_comp - y0_comp
+            
+#             # 4. Always-Taker 专家绝对打分
+#             pi_dict["wb_exp_y0_always"] = y0_always
+#             pi_dict["wb_exp_y1_always"] = y1_always
+#             pi_dict["wb_exp_u_always"] = y1_always - y0_always
+#         return y0, y1, pi_dict
+
+
+
+
+
+# # ==========================================
+# # 骨架 4: 残差多头路由模型 (Level 4 - V6 Residual MoE)
+# # ==========================================
+# class TARNET_Residual_MoE(TARNET_Proposed):
+#     """
+#     V6 终极架构：残差 MoE。
+#     解决 V3 参数空间爆炸和小群体(如AT)数据稀疏导致的过拟合问题。
+#     主干网络学习大盘 Common 知识，轻量级专家只学习特定人群的偏差 (Residuals)。
+#     """
+#     def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
+#                  hidden_dims: list, dropout_rate: float, 
+#                  c_model: nn.Module = None, embedding_dim: int = 8):
+#         super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, 
+#                          dropout_rate, c_fusion_mode="none", c_model=c_model, 
+#                          embedding_dim=embedding_dim)
+        
+#         input_dim = self.encoder.output_dim
+        
+#         # 1. 共享基座 (Shared Base) - 学习 100% 全量数据的通用规律
+#         layers = []
+#         curr_dim = input_dim
+#         for h_dim in hidden_dims:
+#             layers.append(nn.Linear(curr_dim, h_dim))
+#             layers.append(nn.ReLU())
+#             if dropout_rate > 0: layers.append(nn.Dropout(dropout_rate))
+#             curr_dim = h_dim
+#         self.shared_base = nn.Sequential(*layers)
+        
+#         # 基座的主力输出头 (预测大盘基准值)
+#         self.base_head_0 = nn.Linear(curr_dim, 1)
+#         self.base_head_1 = nn.Linear(curr_dim, 1)
+
+#         # 2. 轻量级残差专家 (Lightweight Residual Experts)
+#         # 不再复制整个庞大的塔，只在 Shared Base 输出后挂载一个小 MLP
+#         def build_res_expert():
+#             return nn.ModuleDict({
+#                 'res_0': nn.Sequential(
+#                     nn.Linear(curr_dim, curr_dim // 2), 
+#                     nn.ReLU(), 
+#                     nn.Linear(curr_dim // 2, 1)
+#                 ),
+#                 'res_1': nn.Sequential(
+#                     nn.Linear(curr_dim, curr_dim // 2), 
+#                     nn.ReLU(), 
+#                     nn.Linear(curr_dim // 2, 1)
+#                 )
+#             })
+
+#         self.res_never = build_res_expert()
+#         self.res_comp = build_res_expert()
+#         self.res_always = build_res_expert()
+        
+#         # 清除父类冗余网络层，释放内存
+#         del self.shared_layers
+#         del self.head_0
+#         del self.head_1
+
+#     def forward(self, x_cont, x_cat):
+#         x_main = self.encoder(x_cont, x_cat)
+        
+#         # 1. 获取因果先验概率 (门控权重)
+#         pi_00, pi_01, pi_11 = self.extract_pi_prior(x_cont, x_cat)
+#         pi_dict = {"p_never": pi_00, "p_complier": pi_01, "p_always": pi_11}
+        
+#         # 2. 基座推理：算出大盘的 Base Logit
+#         shared_emb = self.shared_base(x_main)
+#         base_y0 = self.base_head_0(shared_emb).squeeze(-1)
+#         base_y1 = self.base_head_1(shared_emb).squeeze(-1)
+        
+#         # 3. 专家推理：算出各类人群特有的残差偏移 (Residual Offset)
+#         r0_never = self.res_never['res_0'](shared_emb).squeeze(-1)
+#         r1_never = self.res_never['res_1'](shared_emb).squeeze(-1)
+        
+#         r0_comp = self.res_comp['res_0'](shared_emb).squeeze(-1)
+#         r1_comp = self.res_comp['res_1'](shared_emb).squeeze(-1)
+        
+#         r0_always = self.res_always['res_0'](shared_emb).squeeze(-1)
+#         r1_always = self.res_always['res_1'](shared_emb).squeeze(-1)
+        
+#         # 4. 残差 MoE 融合：预测值 = 基准值 + 概率加权的残差值
+#         y0 = base_y0 + (pi_00 * r0_never + pi_01 * r0_comp + pi_11 * r0_always)
+#         y1 = base_y1 + (pi_00 * r1_never + pi_01 * r1_comp + pi_11 * r1_always)
+        
+#         if not self.training:
+#             pi_dict["wb_shared_emb"] = shared_emb
+            
+#             # 1. Base 塔打分
+#             pi_dict["wb_base_y0"] = base_y0
+#             pi_dict["wb_base_y1"] = base_y1
+#             pi_dict["wb_base_u"] = base_y1 - base_y0
+            
+#             # 2. Never-Taker 专家残差
+#             pi_dict["wb_res_y0_never"] = r0_never
+#             pi_dict["wb_res_y1_never"] = r1_never
+#             pi_dict["wb_res_u_never"] = r1_never - r0_never
+            
+#             # 3. Complier 专家残差
+#             pi_dict["wb_res_y0_comp"] = r0_comp
+#             pi_dict["wb_res_y1_comp"] = r1_comp
+#             pi_dict["wb_res_u_comp"] = r1_comp - r0_comp
+            
+#             # 4. Always-Taker 专家残差
+#             pi_dict["wb_res_y0_always"] = r0_always
+#             pi_dict["wb_res_y1_always"] = r1_always
+#             pi_dict["wb_res_u_always"] = r1_always - r0_always
+
+#         return y0, y1, pi_dict
 
 
 import torch
@@ -1749,6 +2140,72 @@ class DragonNet(nn.Module):
         # t_logit 和 epsilon 塞进 pi_dict 传给 loss_fn
         return y0_logit, y1_logit, {"t_logit": t_logit, "epsilon": self.epsilon}
 
+
+# =========================================================================
+# 🎯 ICDM 2021 学术重构版: EUEN_Academic (非工业简化版)
+# 严格遵循双塔完全独立拓扑 + 显式残差截断 + Kaiming 初始化 + Head Bias 0.1
+# =========================================================================
+class EUEN_Academic(nn.Module):
+    def __init__(self, continuous_dim, categorical_cardinalities, hidden_dims=[128, 64], dropout_rate=0.0):
+        super().__init__()
+        
+        # 两套完全物理隔离的底层特征编码器，保证权重绝对不交叉
+        self.encoder_control = FeatureEncoder(continuous_dim, categorical_cardinalities)
+        self.encoder_uplift = FeatureEncoder(continuous_dim, categorical_cardinalities)
+        
+        c_in_dim = self.encoder_control.output_dim
+        u_in_dim = self.encoder_uplift.output_dim
+        
+        # 1. ControlNet: 专职建模 μ(x)，即控制组基线
+        c_layers = []
+        curr_dim = c_in_dim
+        for dim in hidden_dims:
+            c_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
+            if dropout_rate > 0: c_layers.append(nn.Dropout(dropout_rate))
+            curr_dim = dim
+        self.control_mlp = nn.Sequential(*c_layers)
+        self.control_head = nn.Linear(curr_dim, 1)
+        
+        # 2. UpliftNet: 专职建模 τ(x)，即纯粹干预相对增量 (与 C 网权重完全独立)
+        u_layers = []
+        curr_dim = u_in_dim
+        for dim in hidden_dims:
+            u_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
+            if dropout_rate > 0: u_layers.append(nn.Dropout(dropout_rate))
+            curr_dim = dim
+        self.uplift_mlp = nn.Sequential(*u_layers)
+        self.uplift_head = nn.Linear(curr_dim, 1)
+        
+        # 3. 严格对齐学术版初始化细节 (Kaiming 正态分布 + Head Bias 固定为 0.1)
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='linear')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        # 固定首批偏置置为 0.1 
+        nn.init.constant_(self.control_head.bias, 0.1)
+        nn.init.constant_(self.uplift_head.bias, 0.1)
+
+    def forward(self, x_cont, x_cat):
+        # 分流底层表征
+        c_feat = self.encoder_control(x_cont, x_cat)
+        u_feat = self.encoder_uplift(x_cont, x_cat)
+        
+        # 计算控制组 logits 
+        c_logit = self.control_head(self.control_mlp(c_feat)).squeeze(-1)
+        # 计算纯增量部分 u_tau
+        u_tau = self.uplift_head(self.uplift_mlp(u_feat)).squeeze(-1)
+        
+        y0_logit = c_logit
+        # 严格落实残差显式 stop_grad：y0 路径被 detach 阻断，控制增量网络梯度干净
+        y1_logit = c_logit.detach() + u_tau
+        
+        # 满足学术指标规范，pi_dict 为空 {}
+        return y0_logit, y1_logit, {}
+
 # ==========================================
 # 🎯 显式增益: EUEN (Explicit Uplift Estimation Network)
 # ==========================================
@@ -1784,124 +2241,218 @@ class EUEN(nn.Module):
         
         return y0_logit, y1_logit, {}
 
+# class EFIN(nn.Module):
+#     def __init__(self, continuous_dim, categorical_cardinalities, embed_dim=16, hidden_dims=[128, 64]):
+#         super().__init__()
+#         self.cont_dim = continuous_dim if continuous_dim is not None else 0
+#         self.cat_cards = categorical_cardinalities or {}
+#         self.embed_dim = embed_dim
+        
+#         # -------------------------------------------
+#         # Module 1: The Feature Encoder (Paper Eq 3)
+#         # 必须把每个特征独立编码成 embed_dim，不能提前 concat！
+#         # -------------------------------------------
+#         # 连续特征：每个特征分配一个独立的线性映射 W*x + b
+#         if self.cont_dim > 0:
+#             self.cont_W = nn.Parameter(torch.empty(self.cont_dim, embed_dim))
+#             self.cont_b = nn.Parameter(torch.empty(self.cont_dim, embed_dim))
+#             nn.init.xavier_uniform_(self.cont_W)
+#             nn.init.zeros_(self.cont_b)
+            
+#         # 离散特征：标准的 Lookup Table
+#         self.cat_embs = nn.ModuleDict({
+#             col: nn.Embedding(card, embed_dim) for col, card in self.cat_cards.items()
+#         })
+        
+#         # 干预特征：(Paper 设定 treatment 也有特征，这里我们为二进制 T=1 分配一个专属 Embedding)
+#         self.t_emb = nn.Embedding(2, embed_dim) 
+        
+#         self.num_features = self.cont_dim + len(self.cat_cards)
+        
+#         # -------------------------------------------
+#         # Module 2: The Self-interaction (Paper Eq 4, 5, 6)
+#         # 负责控制组的自然响应 (Natural Response)
+#         # -------------------------------------------
+#         # 论文推荐使用 Self-attention
+#         self.self_attn = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=2, batch_first=True)
+        
+#         # 动态构建 natural_mlp，兼容任意层数
+#         natural_layers = []
+#         curr_dim = self.num_features * embed_dim
+#         for dim in hidden_dims:
+#             natural_layers.extend([nn.Linear(curr_dim, dim), nn.ReLU()])
+#             curr_dim = dim
+#         natural_layers.append(nn.Linear(curr_dim, 1))
+#         self.natural_mlp = nn.Sequential(*natural_layers)
+        
+#         # -------------------------------------------
+#         # Module 3: Treatment-aware Interaction (Paper Eq 8, 9, 10)
+#         # 负责建模特定干预下，特征的敏感度 (Uplift)
+#         # -------------------------------------------
+#         self.W_t1 = nn.Linear(embed_dim, embed_dim, bias=False)
+#         self.W_t2 = nn.Linear(embed_dim, embed_dim, bias=True)
+#         self.W_t0 = nn.Linear(embed_dim, 1, bias=False)
+        
+#         # 动态构建 uplift_mlp，兼容任意层数
+#         uplift_layers = []
+#         curr_dim_uplift = embed_dim
+#         for dim in hidden_dims:
+#             uplift_layers.extend([nn.Linear(curr_dim_uplift, dim), nn.ReLU()])
+#             curr_dim_uplift = dim
+#         uplift_layers.append(nn.Linear(curr_dim_uplift, 1))
+#         self.uplift_mlp = nn.Sequential(*uplift_layers)
+        
+#         # -------------------------------------------
+#         # Module 4: Intervention Constraint (Paper Eq 13)
+#         # 反向标签预测，防止分布差异
+#         # -------------------------------------------
+#         self.constraint_mlp = nn.Linear(embed_dim, 1)
+
+#     def forward(self, x_cont, x_cat):
+#         device = x_cont.device if x_cont is not None else x_cat[list(x_cat.keys())[0]].device
+#         B = x_cont.shape[0] if x_cont is not None else x_cat[list(x_cat.keys())[0]].shape[0]
+        
+#         # ==================================
+#         # 1. 序列化特征编码 (B, F, D)
+#         # ==================================
+#         feat_embs = []
+#         if self.cont_dim > 0:
+#             # (B, F_cont, 1) * (1, F_cont, D) -> (B, F_cont, D)
+#             cont_e = x_cont.unsqueeze(-1) * self.cont_W.unsqueeze(0) + self.cont_b.unsqueeze(0)
+#             feat_embs.append(cont_e)
+#         if len(self.cat_cards) > 0:
+#             cat_e = [self.cat_embs[col](x_cat[col]).unsqueeze(1) for col in self.cat_cards.keys()]
+#             feat_embs.append(torch.cat(cat_e, dim=1))
+            
+#         X = torch.cat(feat_embs, dim=1) # Shape: (B, F, D)
+        
+#         # ==================================
+#         # 2. 控制组自然响应 y(0)
+#         # ==================================
+#         attn_out, _ = self.self_attn(X, X, X) # (B, F, D)
+#         # 展平后过 MLP: concat(e_x) -> MLP
+#         y0_logit = self.natural_mlp(attn_out.reshape(B, -1)).squeeze(-1) 
+        
+#         # ==================================
+#         # 3. 实验组增益预测 y(1) = y(0) + tau_1
+#         # ==================================
+#         # 获取 T=1 的专属表征 e^t
+#         t1_idx = torch.ones((B,), dtype=torch.long, device=device)
+#         e_t = self.t_emb(t1_idx) # (B, D)
+        
+#         # 交叉注意力打分: alpha = Softmax(W_t0 * ReLU(W_t1*e_t + W_t2*X))
+#         interact = F.relu(self.W_t1(e_t).unsqueeze(1) + self.W_t2(X)) # (B, F, D)
+#         alpha = F.softmax(self.W_t0(interact), dim=1) # (B, F, 1)
+        
+#         # 加权求和获取敏感特征 e^{xt}
+#         e_xt = torch.sum(alpha * X, dim=1) # (B, D)
+        
+#         # 预测纯增益 Uplift
+#         tau_1 = self.uplift_mlp(e_xt).squeeze(-1) # (B,)
+        
+#         # 显式相加
+#         y1_logit = y0_logit + tau_1 
+        
+#         # ==================================
+#         # 4. 干预平衡约束 (用于 Loss 惩罚)
+#         # ==================================
+#         t_constraint_logit = self.constraint_mlp(e_xt).squeeze(-1)
+        
+#         return y0_logit, y1_logit, {"efin_constraint_logit": t_constraint_logit}
+
 class EFIN(nn.Module):
-    def __init__(self, continuous_dim, categorical_cardinalities, embed_dim=16, hidden_dims=[128, 64]):
+    def __init__(self, continuous_dim, categorical_cardinalities, embed_dim=16, 
+                 hidden_dims=[128, 64, 32], dropout_rate=0.0):
         super().__init__()
         self.cont_dim = continuous_dim if continuous_dim is not None else 0
         self.cat_cards = categorical_cardinalities or {}
-        self.embed_dim = embed_dim
+        self.hu = embed_dim  # 严格对齐 Git 的 hu
         
-        # -------------------------------------------
-        # Module 1: The Feature Encoder (Paper Eq 3)
-        # 必须把每个特征独立编码成 embed_dim，不能提前 concat！
-        # -------------------------------------------
-        # 连续特征：每个特征分配一个独立的线性映射 W*x + b
+        # 1. 虚拟特征路径 (Virtual Split)
+        self.K = self.cont_dim + len(self.cat_cards)
         if self.cont_dim > 0:
-            self.cont_W = nn.Parameter(torch.empty(self.cont_dim, embed_dim))
-            self.cont_b = nn.Parameter(torch.empty(self.cont_dim, embed_dim))
+            self.cont_W = nn.Parameter(torch.empty(self.cont_dim, self.hu))
+            self.cont_b = nn.Parameter(torch.empty(self.cont_dim, self.hu))
             nn.init.xavier_uniform_(self.cont_W)
             nn.init.zeros_(self.cont_b)
+        if len(self.cat_cards) > 0:
+            self.cat_embs = nn.ModuleDict({
+                col: nn.Embedding(card, self.hu) for col, card in self.cat_cards.items()
+            })
             
-        # 离散特征：标准的 Lookup Table
-        self.cat_embs = nn.ModuleDict({
-            col: nn.Embedding(card, embed_dim) for col, card in self.cat_cards.items()
-        })
+        # 2. Treatment & Attention 参数
+        self.t_rep_layer = nn.Linear(1, self.hu, bias=False)
+        nn.init.xavier_uniform_(self.t_rep_layer.weight)
         
-        # 干预特征：(Paper 设定 treatment 也有特征，这里我们为二进制 T=1 分配一个专属 Embedding)
-        self.t_emb = nn.Embedding(2, embed_dim) 
+        self.W_q = nn.Linear(self.hu, self.hu, bias=False)
+        self.W_k = nn.Linear(self.hu, self.hu, bias=False)
+        self.W_v = nn.Linear(self.hu, self.hu, bias=False)
+        self.scale = self.hu ** 0.5
         
-        self.num_features = self.cont_dim + len(self.cat_cards)
-        
-        # -------------------------------------------
-        # Module 2: The Self-interaction (Paper Eq 4, 5, 6)
-        # 负责控制组的自然响应 (Natural Response)
-        # -------------------------------------------
-        # 论文推荐使用 Self-attention
-        self.self_attn = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=2, batch_first=True)
-        
-        # 动态构建 natural_mlp，兼容任意层数
-        natural_layers = []
-        curr_dim = self.num_features * embed_dim
+        self.att1 = nn.Linear(self.hu, self.hu)
+        self.att2 = nn.Linear(self.hu, self.hu)
+        self.att3 = nn.Linear(self.hu, 1, bias=False)
+
+        # 3. 🌟 动态构建 Control MLP (对接大盘 hidden_dims, 维持 ELU)
+        c_layers = []
+        curr_dim = self.K * self.hu
         for dim in hidden_dims:
-            natural_layers.extend([nn.Linear(curr_dim, dim), nn.ReLU()])
+            c_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
+            if dropout_rate > 0: c_layers.append(nn.Dropout(dropout_rate))
             curr_dim = dim
-        natural_layers.append(nn.Linear(curr_dim, 1))
-        self.natural_mlp = nn.Sequential(*natural_layers)
-        
-        # -------------------------------------------
-        # Module 3: Treatment-aware Interaction (Paper Eq 8, 9, 10)
-        # 负责建模特定干预下，特征的敏感度 (Uplift)
-        # -------------------------------------------
-        self.W_t1 = nn.Linear(embed_dim, embed_dim, bias=False)
-        self.W_t2 = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.W_t0 = nn.Linear(embed_dim, 1, bias=False)
-        
-        # 动态构建 uplift_mlp，兼容任意层数
-        uplift_layers = []
-        curr_dim_uplift = embed_dim
+        c_layers.append(nn.Linear(curr_dim, 1))
+        self.control_mlp = nn.Sequential(*c_layers)
+
+        # 4. 🌟 动态构建 Uplift Trunk (对接大盘 hidden_dims, 维持 ELU)
+        u_layers = []
+        curr_dim = self.hu
         for dim in hidden_dims:
-            uplift_layers.extend([nn.Linear(curr_dim_uplift, dim), nn.ReLU()])
-            curr_dim_uplift = dim
-        uplift_layers.append(nn.Linear(curr_dim_uplift, 1))
-        self.uplift_mlp = nn.Sequential(*uplift_layers)
+            u_layers.extend([nn.Linear(curr_dim, dim), nn.ELU()])
+            if dropout_rate > 0: u_layers.append(nn.Dropout(dropout_rate))
+            curr_dim = dim
+        self.uplift_trunk = nn.Sequential(*u_layers)
         
-        # -------------------------------------------
-        # Module 4: Intervention Constraint (Paper Eq 13)
-        # 反向标签预测，防止分布差异
-        # -------------------------------------------
-        self.constraint_mlp = nn.Linear(embed_dim, 1)
+        # 5. 同源的 Uplift 与 Intervention 头
+        self.u_tau_head = nn.Linear(curr_dim, 1)
+        self.intervention_head = nn.Linear(curr_dim, 1)
 
     def forward(self, x_cont, x_cat):
-        device = x_cont.device if x_cont is not None else x_cat[list(x_cat.keys())[0]].device
+        device = next(self.parameters()).device
         B = x_cont.shape[0] if x_cont is not None else x_cat[list(x_cat.keys())[0]].shape[0]
         
-        # ==================================
-        # 1. 序列化特征编码 (B, F, D)
-        # ==================================
+        # 特征编码
         feat_embs = []
-        if self.cont_dim > 0:
-            # (B, F_cont, 1) * (1, F_cont, D) -> (B, F_cont, D)
+        if self.cont_dim > 0 and x_cont is not None:
             cont_e = x_cont.unsqueeze(-1) * self.cont_W.unsqueeze(0) + self.cont_b.unsqueeze(0)
             feat_embs.append(cont_e)
-        if len(self.cat_cards) > 0:
+        if len(self.cat_cards) > 0 and x_cat is not None:
             cat_e = [self.cat_embs[col](x_cat[col]).unsqueeze(1) for col in self.cat_cards.keys()]
             feat_embs.append(torch.cat(cat_e, dim=1))
-            
-        X = torch.cat(feat_embs, dim=1) # Shape: (B, F, D)
+        x_rep = torch.cat(feat_embs, dim=1) 
         
-        # ==================================
-        # 2. 控制组自然响应 y(0)
-        # ==================================
-        attn_out, _ = self.self_attn(X, X, X) # (B, F, D)
-        # 展平后过 MLP: concat(e_x) -> MLP
-        y0_logit = self.natural_mlp(attn_out.reshape(B, -1)).squeeze(-1) 
+        # Self-Attention
+        x_rep_norm = F.normalize(x_rep, p=2, dim=-1)
+        Q, K, V = self.W_q(x_rep_norm), self.W_k(x_rep_norm), self.W_v(x_rep_norm)
+        scores = torch.sigmoid(torch.matmul(Q, K.transpose(-1, -2)) / self.scale)
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_out = torch.matmul(attn_weights, V)
+        y0_logit = self.control_mlp(attn_out.reshape(B, -1)).squeeze(-1)
         
-        # ==================================
-        # 3. 实验组增益预测 y(1) = y(0) + tau_1
-        # ==================================
-        # 获取 T=1 的专属表征 e^t
-        t1_idx = torch.ones((B,), dtype=torch.long, device=device)
-        e_t = self.t_emb(t1_idx) # (B, D)
+        # Interaction Attention
+        ones_t = torch.ones((B, 1), dtype=torch.float32, device=device)
+        t_rep = self.t_rep_layer(ones_t)
+        t_part = torch.sigmoid(self.att1(t_rep)).unsqueeze(1)
+        x_part = torch.sigmoid(self.att2(x_rep))
+        alpha = F.softmax(self.att3(F.relu(t_part + x_part)), dim=1)
+        e_xt = torch.sum(alpha * x_rep, dim=1)
         
-        # 交叉注意力打分: alpha = Softmax(W_t0 * ReLU(W_t1*e_t + W_t2*X))
-        interact = F.relu(self.W_t1(e_t).unsqueeze(1) + self.W_t2(X)) # (B, F, D)
-        alpha = F.softmax(self.W_t0(interact), dim=1) # (B, F, 1)
+        # 同源分叉 & Stop_grad
+        uplift_hidden = self.uplift_trunk(e_xt)
+        u_tau = self.u_tau_head(uplift_hidden).squeeze(-1)
+        t_logit = self.intervention_head(uplift_hidden).squeeze(-1)
+        y1_logit = y0_logit.detach() + u_tau
         
-        # 加权求和获取敏感特征 e^{xt}
-        e_xt = torch.sum(alpha * X, dim=1) # (B, D)
-        
-        # 预测纯增益 Uplift
-        tau_1 = self.uplift_mlp(e_xt).squeeze(-1) # (B,)
-        
-        # 显式相加
-        y1_logit = y0_logit + tau_1 
-        
-        # ==================================
-        # 4. 干预平衡约束 (用于 Loss 惩罚)
-        # ==================================
-        t_constraint_logit = self.constraint_mlp(e_xt).squeeze(-1)
-        
-        return y0_logit, y1_logit, {"efin_constraint_logit": t_constraint_logit}
+        return y0_logit, y1_logit, {"efin_t_logit": t_logit}
 
 
 
@@ -2029,51 +2580,65 @@ class CFRNet(nn.Module):
 # 👑 工业界 SOTA: DESCN (Deep Entire Space Cross Networks - KDD 2022)
 # ==========================================
 class DESCN(nn.Module):
-    def __init__(self, continuous_dim, categorical_cardinalities, shared_dims=[128], tower_dims=[64]):
+    def __init__(self, continuous_dim, categorical_cardinalities, hidden_dims=[128, 64, 32], dropout_rate=0.0):
+        """
+        KDD 2022 复刻基线: DESCN (严格对齐 3层 ELU Share + L2 Norm + 四独立子网各3层 ELU)
+        """
         super().__init__()
         self.encoder = FeatureEncoder(continuous_dim, categorical_cardinalities)
+        input_dim = self.encoder.output_dim
         
-        # 1. 共享底层 (Shared Network)
-        # 论文 4.4 节指出：shared network 包含 128 hidden units
-        shared_layers = []
-        curr_dim = self.encoder.output_dim
-        for dim in shared_dims:
-            shared_layers.extend([nn.Linear(curr_dim, dim), nn.ReLU()])
-            curr_dim = dim
-        self.shared_net = nn.Sequential(*shared_layers)
+        # 1. 必改项-1 & 3 & 4: ShareNetwork 严格固定 3 层 FC + ELU (根据参数来源派生)
+        # 输入维度 -> 128 -> 128 -> 64
+        self.shared_net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ELU(),
+            nn.Linear(128, 128),
+            nn.ELU(),
+            nn.Linear(128, 64),
+            nn.ELU()
+        )
         
-        # 2. 四个独立的 Tower (论文 4.4 节指出：other sub-models 包含 64 hidden units)
-        def build_tower(in_dim, dims):
-            layers = []
-            curr = in_dim
-            for d in dims:
-                layers.extend([nn.Linear(curr, d), nn.ReLU()])
-                curr = d
-            layers.append(nn.Linear(curr, 1))
-            return nn.Sequential(*layers)
+        # 2. 必改项-2 & 3 & 4: 四头 BaseModel 拓扑完全独立，各固定为 3 层 ELU + Linear->logit
+        # 宽 64 -> 64 -> 32 -> 1
+        def build_base_model():
+            return nn.Sequential(
+                nn.Linear(64, 64),
+                nn.ELU(),
+                nn.Linear(64, 64),
+                nn.ELU(),
+                nn.Linear(64, 32),
+                nn.ELU(),
+                nn.Linear(32, 1)
+            )
             
-        self.propensity_net = build_tower(curr_dim, tower_dims) # 预测倾向分 pi
-        self.tr_net = build_tower(curr_dim, tower_dims)         # 预测 Treated Response (mu_1)
-        self.cr_net = build_tower(curr_dim, tower_dims)         # 预测 Control Response (mu_0)
-        self.pte_net = build_tower(curr_dim, tower_dims)        # 预测 Pseudo Treatment Effect (tau')
+        self.propensity_net = build_base_model()  # 预测倾向分 pi
+        self.cr_net = build_base_model()          # 预测 Control Response (mu_0)
+        self.tr_net = build_base_model()          # 预测 Treated Response (mu_1)
+        self.pte_net = build_base_model()         # 预测 Pseudo Treatment Effect (tau')
 
     def forward(self, x_cont, x_cat):
-        # 提取共享表征
-        shared_rep = self.shared_net(self.encoder(x_cont, x_cat))
+        # 特征编码
+        feat = self.encoder(x_cont, x_cat)
         
-        # 所有的网络直接输出 Logit (不经过 Sigmoid)
-        # 论文 Eq 6 指出：tau' 是加在 logit 上的，这样数学上更稳定
-        pi_logit = self.propensity_net(shared_rep).squeeze(-1)
-        mu1_logit = self.tr_net(shared_rep).squeeze(-1)
-        mu0_logit = self.cr_net(shared_rep).squeeze(-1)
-        tau_logit = self.pte_net(shared_rep).squeeze(-1)
+        # Share 底层前向
+        shared_rep = self.shared_net(feat)
         
+        # 必改项-1: 增加末端 L2 归一化 (descn_rep_normalize)
+        shared_rep_norm = F.normalize(shared_rep, p=2, dim=-1)
+        
+        # 四头独立 BaseModel 分发输出 raw logit
+        pi_logit = self.propensity_net(shared_rep_norm).squeeze(-1)
+        mu0_logit = self.cr_net(shared_rep_norm).squeeze(-1)
+        mu1_logit = self.tr_net(shared_rep_norm).squeeze(-1)
+        tau_logit = self.pte_net(shared_rep_norm).squeeze(-1)
+        
+        # 接口规范保持一致
         pi_dict = {
             "descn_pi_logit": pi_logit,
             "descn_tau_logit": tau_logit
         }
         
-        # 推断时，直接返回 mu0 和 mu1 即可，Evaluator 会用它们相减算 Uplift
         return mu0_logit, mu1_logit, pi_dict
 
 
@@ -2154,3 +2719,148 @@ class DynamicPriorAlignmentLayer(nn.Module):
 
 
 
+# =========================================================================
+# 🌟 Ours 核心架构一: TARNET_Ours_S4_Conflict (S4 乘法门控流 - 基于 Residual_MoE 基座)
+# =========================================================================
+class TARNET_Ours_S4_Conflict(TARNET_Residual_MoE):
+    """
+    Ours 核心一：特征乘法门控。
+    全部加载并继承自统一的 TARNET_Residual_MoE 基座。
+    🌟 默认安全关闭：梯度阻断默认全部为 False，保持纯净对照。
+    """
+    def __init__(self, continuous_dim: int, categorical_cardinalities: dict, 
+                 hidden_dims: list, dropout_rate: float, 
+                 c_model: nn.Module = None, embedding_dim: int = 8,
+                 head_hidden_dims: list = None,
+                 ours_s4_use_stop_grad: bool = False): # 🌟 重新加回：默认强行关闭
+        super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, dropout_rate, 
+                         c_model, embedding_dim, head_hidden_dims=head_hidden_dims)
+        
+        shared_emb_dim = hidden_dims[-1]
+        self.ours_s4_use_stop_grad = ours_s4_use_stop_grad
+        
+        # V8_S4: 纯特征网络产生 3 个专家的独立特征门控 (输出 3 维过 Sigmoid)
+        self.dynamic_net = nn.Sequential(
+            nn.Linear(shared_emb_dim, shared_emb_dim // 2),
+            nn.ReLU(),
+            nn.Linear(shared_emb_dim // 2, 3)
+        )
+
+    def forward(self, x_cont, x_cat):
+        x_main = self.encoder(x_cont, x_cat)
+        shared_emb = self.shared_base(x_main)
+        
+        pi_00, pi_01, pi_11 = self.extract_pi_prior(x_cont, x_cat)
+        pi_dict = {"p_never": pi_00, "p_complier": pi_01, "p_always": pi_11}
+        
+        # 🌟 修复关键：让 S4 同样支持一键开启【梯度阻断 (Stop-Gradient)】
+        # 开启后，V10 后向产生的暴躁梯度无法回传污染 dynamic_net 分支，从而保护特征底座
+        dynamic_input = shared_emb.detach() if (self.training and self.ours_s4_use_stop_grad) else shared_emb
+        
+        # 🧪 S4 特征门控机制（乘法路由）
+        gates = torch.sigmoid(self.dynamic_net(dynamic_input))
+        gate_00, gate_01, gate_11 = gates[:, 0], gates[:, 1], gates[:, 2]
+        
+        # 通过特征门控对先验概率进行乘法打折纠偏
+        pi_00_final = pi_00 * gate_00
+        pi_01_final = pi_01 * gate_01
+        pi_11_final = pi_11 * gate_11
+        
+        # 调用完美继承并对齐的深层预测头
+        base_y0 = self.base_head_0(shared_emb).squeeze(-1)
+        base_y1 = self.base_head_1(shared_emb).squeeze(-1)
+        
+        # 调用完美继承并对齐的深层残差专家塔
+        r0_never, r1_never = self.res_never['res_0'](shared_emb).squeeze(-1), self.res_never['res_1'](shared_emb).squeeze(-1)
+        r0_comp, r1_comp   = self.res_comp['res_0'](shared_emb).squeeze(-1), self.res_comp['res_1'](shared_emb).squeeze(-1)
+        r0_always, r1_always = self.res_always['res_0'](shared_emb).squeeze(-1), self.res_always['res_1'](shared_emb).squeeze(-1)
+        
+        y0 = base_y0 + (pi_00_final * r0_never + pi_01_final * r0_comp + pi_11_final * r0_always)
+        y1 = base_y1 + (pi_00_final * r1_never + pi_01_final * r1_comp + pi_11_final * r1_always)
+        
+        # 填充全量白盒监控字典
+        pi_dict.update({
+            "wb_shared_emb": shared_emb,
+            "wb_final_pi_never": pi_00_final,
+            "wb_final_pi_comp": pi_01_final,
+            "wb_final_pi_always": pi_11_final,
+            "wb_gate_never": gate_00,
+            "wb_gate_comp": gate_01,
+            "wb_gate_always": gate_11,
+            "wb_base_y0": base_y0,
+            "wb_base_y1": base_y1
+        })
+        return y0, y1, pi_dict
+
+class TARNET_Ours_S6_Conflict(TARNET_Residual_MoE):
+    """
+    Ours 核心二：Logit 空间加法。
+    全部加载并继承自统一的 TARNET_Residual_MoE 基座。
+    🌟 默认安全关闭：梯度阻断与 Logit 裁剪默认全部为 False，保持最纯粹原始状态。
+    """
+    def __init__(self, continuous_dim: int, categorical_cardinalities: dict, 
+                 hidden_dims: list, dropout_rate: float, 
+                 c_model: nn.Module = None, embedding_dim: int = 8, 
+                 ours_s6_temp: float = 1.0,
+                 head_hidden_dims: list = None,
+                 ours_s6_use_stop_grad: bool = False,   # 🌟 默认值强行关闭
+                 ours_s6_use_logit_clamp: bool = False, # 🌟 默认值强行关闭
+                 ours_s6_clamp_val: float = 2.0):
+        super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, dropout_rate, 
+                         c_model, embedding_dim, head_hidden_dims=head_hidden_dims)
+        
+        shared_emb_dim = hidden_dims[-1]
+        self.ours_s6_temp = ours_s6_temp  
+        self.ours_s6_use_stop_grad = ours_s6_use_stop_grad
+        self.ours_s6_use_logit_clamp = ours_s6_use_logit_clamp
+        self.ours_s6_clamp_val = ours_s6_clamp_val
+        
+        self.dynamic_net = nn.Sequential(
+            nn.Linear(shared_emb_dim, shared_emb_dim // 2),
+            nn.ReLU(),
+            nn.Linear(shared_emb_dim // 2, 3)
+        )
+        nn.init.zeros_(self.dynamic_net[-1].weight)
+        nn.init.zeros_(self.dynamic_net[-1].bias)
+
+    def forward(self, x_cont, x_cat):
+        x_main = self.encoder(x_cont, x_cat)
+        shared_emb = self.shared_base(x_main)
+        
+        pi_00, pi_01, pi_11 = self.extract_pi_prior(x_cont, x_cat)
+        pi_dict = {"p_never": pi_00, "p_complier": pi_01, "p_always": pi_11}
+        
+        # 🌟 梯度阻断控制 (Stop-Gradient)
+        dynamic_input = shared_emb.detach() if (self.training and self.ours_s6_use_stop_grad) else shared_emb
+        
+        feature_offsets = self.dynamic_net(dynamic_input)
+        
+        # 🌟 Logit 动态裁剪 (Clamp)
+        if self.ours_s6_use_logit_clamp:
+            feature_offsets = torch.clamp(feature_offsets, min=-self.ours_s6_clamp_val, max=self.ours_s6_clamp_val)
+        
+        pi_prior_3d = torch.stack([pi_00, pi_01, pi_11], dim=1)
+        logit_prior = torch.log(pi_prior_3d + 1e-7)
+        
+        pi_final_3d = F.softmax((logit_prior + feature_offsets) / self.ours_s6_temp, dim=-1)
+        pi_00_final, pi_01_final, pi_11_final = pi_final_3d[:, 0], pi_final_3d[:, 1], pi_final_3d[:, 2]
+        
+        base_y0 = self.base_head_0(shared_emb).squeeze(-1)
+        base_y1 = self.base_head_1(shared_emb).squeeze(-1)
+        
+        r0_never, r1_never = self.res_never['res_0'](shared_emb).squeeze(-1), self.res_never['res_1'](shared_emb).squeeze(-1)
+        r0_comp, r1_comp   = self.res_comp['res_0'](shared_emb).squeeze(-1), self.res_comp['res_1'](shared_emb).squeeze(-1)
+        r0_always, r1_always = self.res_always['res_0'](shared_emb).squeeze(-1), self.res_always['res_1'](shared_emb).squeeze(-1)
+        
+        y0 = base_y0 + (pi_00_final * r0_never + pi_01_final * r0_comp + pi_11_final * r0_always)
+        y1 = base_y1 + (pi_00_final * r1_never + pi_01_final * r1_comp + pi_11_final * r1_always)
+        
+        pi_dict.update({
+            "wb_shared_emb": shared_emb,
+            "wb_final_pi_never": pi_00_final,
+            "wb_final_pi_comp": pi_01_final,
+            "wb_final_pi_always": pi_11_final,
+            "wb_base_y0": base_y0,
+            "wb_base_y1": base_y1
+        })
+        return y0, y1, pi_dict

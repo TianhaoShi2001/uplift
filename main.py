@@ -96,7 +96,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="主分层 Uplift 统一实验框架 (工业防弹版)")
     
     # 核心控制
-    parser.add_argument("--mode", type=str, choices=["debug", "tune", "eval", 'reproduce', 'reproduce_eval'], default="debug",
+    parser.add_argument("--mode", type=str, choices=["debug", "tune", "eval", 'reproduce', 'reproduce_eval'], default="tune",
                         help="debug(极速单次验证) / tune(大规模搜参) / eval(直接加载测试)")
     parser.add_argument("--task", type=str, choices=["train_c", "train_y"], default="train_y")
     parser.add_argument("--model", type=str, default="TARNET", help="指定模型骨架，如 TARNET")
@@ -114,7 +114,7 @@ def build_parser():
     # 资源与运行时
     parser.add_argument("--cuda", type=str, default="0", help="指定可见的GPU ID")
     parser.add_argument("--num_workers", type=int, default=0, help="DataLoader的worker数")
-    parser.add_argument("--num_per_gpu", type=float, default=0.5, help="每个Trial分配多少GPU")
+    parser.add_argument("--num_per_gpu", type=float, default=1, help="每个Trial分配多少GPU")
     parser.add_argument("--seed", type=int, default=42)
 
     return parser
@@ -150,7 +150,7 @@ def main():
         import ray
         if not ray.is_initialized():
             ray.init(
-                address=None, 
+                address="local", 
                 namespace=tmp_name,
                 include_dashboard=False,
                 ignore_reinit_error=True,

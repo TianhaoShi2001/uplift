@@ -261,44 +261,158 @@ def compute_stage3_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config, d
         
         total_loss += sw_loss
         loss_components["sw_loss"] = sw_loss.item()
+    
     elif "group_dro" in loss_types and dro_criterion is not None:
         dro_loss = dro_criterion(bce_raw, pi_dict["p_complier"], treatment, targets)
         total_loss += dro_loss
         loss_components["dro_loss"] = dro_loss.item()
-        
-    elif"prior_conflict" in loss_types:
+    
+    elif "prior_conflict" in loss_types:
         pi_01 = pi_dict["p_complier"].detach()
-        alpha = config.get("conflict_alpha", 2.0)
-        mode = config.get("conflict_mode", "both") # 取值: 'wool_only', 'gold_only', 'both'
+        # 🌟 默认值调整：默认为 "all" 或保持与原有兼容，但通过下面的 alpha=0.0 和 none 强制让其默认不作妖
+        mode = config.get("conflict_mode", "all") 
         
-        # 1. 所有人初始权重为 1.0 (稳住大盘)
+        # 🌟 实验 2 & 5：三个惩罚系数解耦，默认全部设为 0.0！不配参数默认完全不加权！
+        alpha_wool = config.get("conflict_alpha_wool", 0.0)
+        alpha_gold = config.get("conflict_alpha_gold", 0.0)
+        alpha_walkin = config.get("conflict_alpha_walkin", 0.0)
+        
+        # 🌟 实验 3 (Focal)：控制超参，默认设为 "none" (不进行任何动态衰减与截断)
+        focal_type = config.get("conflict_focal_type", "none") 
+        gamma = config.get("conflict_gamma", 2.0)
+        global_margin = config.get("conflict_global_margin", 1.0) 
+        
+        # 🌟 实验 4 (OHEM)：控制超参，默认强行关闭 (False)
+        use_ohem = config.get("conflict_use_ohem", False)
+        ohem_pct = config.get("conflict_ohem_pct", 0.10) 
+        
+        # 🌟 实验 6 (Weight Clip)：控制超参，默认强行关闭 (False)
+        use_weight_clip = config.get("conflict_use_weight_clip", False)
+        max_weight_thres = config.get("conflict_max_weight_thres", 3.0) 
+        
+        # 1. 所有人初始权重为 1.0 (标准大盘平稳底座)
         weights = torch.ones_like(targets, dtype=torch.float)
         
-        # 2. 定位两类错位人群
-        mask_wool = (treatment == 1) & (targets == 0) # 羊毛党：发了券没买
-        mask_gold = (treatment == 1) & (targets == 1) # 隐藏金子：发了券真买了
+        # 2. 精准定位三类因果错位人群
+        mask_wool = (treatment == 1) & (targets == 0)    # 羊毛党
+        mask_gold = (treatment == 1) & (targets == 1)    # 隐藏金子
+        mask_walkin = (treatment == 0) & (targets == 1)  # Walk-in
         
-        # 3. 根据 Mode 动态施加精准打击
-        if mode in ["wool_only", "both"] and mask_wool.any():
-            # co 越高，打脸越疼，权重加得越多
-            weights[mask_wool] += alpha * pi_01[mask_wool]
+        # 3. 计算纯静态大棒权重 static_weights
+        static_weights = torch.zeros_like(targets, dtype=torch.float)
+        if (mode == "all" or "wool" in mode) and mask_wool.any():
+            static_weights[mask_wool] = alpha_wool * pi_01[mask_wool]
             
-        if mode in ["gold_only", "both"] and mask_gold.any():
-            # co 越低，被模型看扁得越惨，权重加得越多
-            weights[mask_gold] += alpha * (1.0 - pi_01[mask_gold])
+        if (mode == "all" or "gold" in mode) and mask_gold.any():
+            static_weights[mask_gold] = alpha_gold * (1.0 - pi_01[mask_gold])
             
-        # 4. 均值归一化：保证 Batch 总 Loss 不会因为系数爆炸而导致梯度崩盘
-        weights = weights / (weights.mean() + 1e-8)
+        if (mode == "all" or "walkin" in mode) and mask_walkin.any():
+            static_weights[mask_walkin] = alpha_walkin * pi_01[mask_walkin]
+            
+        # 4. 核心实现：实验 3 - Focal 逻辑
+        p_final = torch.sigmoid(y_pred_observed).detach() 
         
-        # 5. 计算加权 Loss
+        if focal_type == "none":
+            # 基础不截断版本
+            weights += static_weights
+        elif focal_type == "global_bounded":
+            # 全局托底硬截断版
+            raw_focal_w = 1.0 + static_weights * torch.pow(1.0 - p_final, gamma)
+            weights = torch.clamp(raw_focal_w, min=global_margin)
+            
+        # 5. 核心实现：实验 4 - 在线困难样本挖掘 (OHEM for V10)
+        if use_ohem:
+            with torch.no_grad():
+                q_thresh = torch.quantile(bce_raw.detach(), 1.0 - ohem_pct)
+                is_easy_sample = bce_raw < q_thresh
+                # 易分样本直接把 V10 加成干掉，退化回权重 1.0
+                weights[is_easy_sample] = 1.0
+
+        # 6. 核心实现：实验 6 - 静态权重裁剪 (Weight Clipping)
+        if use_weight_clip:
+            weights = torch.clamp(weights, max=max_weight_thres)
+
+        # 7. 均值归一化防梯度崩盘
+        # weights = weights / (weights.mean() + 1e-8)
         conflict_loss = (bce_raw * weights).mean()
         total_loss += conflict_loss
         loss_components["conflict_loss"] = conflict_loss.item()
-    else:
-        # 纯净的 Baseline BCE
-        bce_loss = bce_raw.mean()
-        total_loss += bce_loss
-        loss_components["bce_loss"] = bce_loss.item()
+
+    # elif "prior_conflict" in loss_types:
+    #     pi_01 = pi_dict["p_complier"].detach()
+    #     mode = config.get("conflict_mode", "all") # 可选: 'wool', 'gold', 'walkin', 'wool_gold', 'wool_walkin', 'gold_walkin', 'all'
+        
+    #     # 🌟 核心改进：贯彻你的意志，三个关键系数彻底独立拆分，绝不混淆
+    #     alpha_wool = config.get("conflict_alpha_wool", 0.0)
+    #     alpha_gold = config.get("conflict_alpha_gold", 0.0)
+    #     alpha_walkin = config.get("conflict_alpha_walkin", 0.0)
+        
+    #     # 1. 所有人初始权重为 1.0 (平稳底座)
+    #     weights = torch.ones_like(targets, dtype=torch.float)
+        
+    #     # 2. 精准定位三类因果错位人群
+    #     mask_wool = (treatment == 1) & (targets == 0)    # 羊毛党：发了券却不买
+    #     mask_gold = (treatment == 1) & (targets == 1)    # 隐藏金子：发了券买了
+    #     mask_walkin = (treatment == 0) & (targets == 1)  # Walk-in：没发券自己买了
+        
+    #     # 3. 🌟 精细化解耦逻辑：只要关键字在 mode 中，或者 mode 为 'all'，就启动对应的靶向加权
+    #     # 这样天然支持：单独 ('wool')、两两组合 ('wool_gold') 和全开 ('all')
+        
+    #     # --- A. 羊毛党加权 ---
+    #     if (mode == "all" or "wool" in mode) and mask_wool.any():
+    #         # co 越高，打脸越疼
+    #         weights[mask_wool] += alpha_wool * pi_01[mask_wool]
+            
+    #     # --- B. 隐藏金子加权 ---
+    #     if (mode == "all" or "gold" in mode) and mask_gold.any():
+    #         # co 越低，被模型看扁得越惨
+    #         weights[mask_gold] += alpha_gold * (1.0 - pi_01[mask_gold])
+            
+    #     # --- C. Walk-in 加权 ---
+    #     if (mode == "all" or "walkin" in mode) and mask_walkin.any():
+    #         # 完美镜像诉求：Walk-in 惩罚方式随 Complier 概率正相关递增
+    #         weights[mask_walkin] += alpha_walkin * pi_01[mask_walkin]
+            
+    #     # 4. 均值归一化：防爆防溢出
+    #     weights = weights / (weights.mean() + 1e-8)
+    #     conflict_loss = (bce_raw * weights).mean()
+    #     total_loss += conflict_loss
+    #     loss_components["conflict_loss"] = conflict_loss.item()
+    # elif "prior_conflict" in loss_types:
+    #     pi_01 = pi_dict["p_complier"].detach()
+    #     alpha = config.get("conflict_alpha", 2.0)
+    #     mode = config.get("conflict_mode", "both") # 可选：'wool_only', 'gold_only', 'both', 'walkin_v10'
+        
+    #     # 1. 所有人初始权重为 1.0 (平稳底座)
+    #     weights = torch.ones_like(targets, dtype=torch.float)
+        
+    #     # 2. 精准定位三类因果错位人群
+    #     mask_wool = (treatment == 1) & (targets == 0)    # 羊毛党：发了券却不买
+    #     mask_gold = (treatment == 1) & (targets == 1)    # 隐藏金子：发了券买了
+    #     mask_walkin = (treatment == 0) & (targets == 1)  # 🌟 新增 Walk-in：没发券自己进店买了
+        
+    #     # 3. 根据调整后的 Mode 动态施加精准惩罚权重
+    #     if mode in ["wool_only", "both"] and mask_wool.any():
+    #         weights[mask_wool] += alpha * pi_01[mask_wool]
+            
+    #     if mode in ["gold_only", "both"] and mask_gold.any():
+    #         weights[mask_gold] += alpha * (1.0 - pi_01[mask_gold])
+            
+    #     if mode in ["walkin_v10", "both"] and mask_walkin.any():
+    #         # 🌟 完美对齐诉求：Walk-in 惩罚方式和 Wool 镜像一致，随 Complier 概率正相关递增
+    #         weights[mask_walkin] += alpha * pi_01[mask_walkin]
+            
+    #     # 4. 均值归一化：防爆防溢出
+    #     weights = weights / (weights.mean() + 1e-8)
+        
+    #     conflict_loss = (bce_raw * weights).mean()
+    #     total_loss += conflict_loss
+    #     loss_components["conflict_loss"] = conflict_loss.item()
+    # else:
+    #     # 纯净的 Baseline BCE
+    #     bce_loss = bce_raw.mean()
+    #     total_loss += bce_loss
+    #     loss_components["bce_loss"] = bce_loss.item()
         
     # ---------------------------------------------------------
     # 2. 方差正则化 (Variance/Consistency Regularization) 
@@ -345,6 +459,8 @@ def compute_stage3_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config, d
             total_loss += rank_alpha * rank_loss
             loss_components["rank_loss"] = (rank_alpha * rank_loss).item()
             
+
+
     return total_loss, loss_components
 
 
@@ -563,7 +679,7 @@ def compute_efin_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config):
     
     # 2. Intervention Constraint Loss (Paper Eq 14)
     # 论文要求使用 inverse label (1 - T) 进行训练，以制造干扰，平衡特征分布
-    t_constraint_logit = pi_dict["efin_constraint_logit"]
+    t_constraint_logit = pi_dict["efin_t_logit"] # ["efin_constraint_logit"]
     inverse_treatment = 1.0 - treatment.float()
     loss_c = F.binary_cross_entropy_with_logits(t_constraint_logit, inverse_treatment)
     
@@ -577,75 +693,77 @@ def compute_efin_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config):
     }
     
     return total_loss, loss_components
-
-
-def compute_descn_loss(mu0_logit, mu1_logit, targets, treatment, pi_dict, config):
+def compute_descn_loss(mu0_logit, mu1_logit, y, t, pi_dict, trial_cfg):
     """
-    DESCN 专属损失函数: ESTR + ESCR + CrossTR + CrossCR + Propensity
+    DESCN 专属损失预估引擎 (防自适应混合精度崩溃全防御版)
     """
+    device = mu0_logit.device
     pi_logit = pi_dict["descn_pi_logit"]
     tau_logit = pi_dict["descn_tau_logit"]
     
-    # ---------------------------------------------------------
-    # 模块 1: ESN (Entire Space Network) Loss (Paper Eq 4)
-    # ---------------------------------------------------------
-    p_mu1 = torch.sigmoid(mu1_logit)
-    p_mu0 = torch.sigmoid(mu0_logit)
-    p_pi = torch.sigmoid(pi_logit)
+    # 1. L_π: 倾向分基本分类损失 (Safe for autocast)
+    loss_pi = F.binary_cross_entropy_with_logits(pi_logit, t.float())
     
-    # 1.1 Propensity Loss (L_pi)
-    loss_pi = F.binary_cross_entropy_with_logits(pi_logit, treatment.float())
+    # ----------------------------------------------------
+    # 🌟 核心防御：退出混合精度，强制切入全精度 float32 计算乘积 ESN 损失
+    # ----------------------------------------------------
+    with torch.cuda.amp.autocast(enabled=False):
+        # 强转为 float32 避免半精度溢出
+        p_pi = torch.clamp(torch.sigmoid(pi_logit.float()), min=0.001, max=0.999)
+        p_mu1 = torch.sigmoid(mu1_logit.float())
+        p_mu0 = torch.sigmoid(mu0_logit.float())
+        
+        # 2. L_ESTR & L_ESCR: 联合事件概率乘积
+        p_estr = p_pi * p_mu1
+        p_escr = (1.0 - p_pi) * p_mu0
+        
+        label_estr = (y == 1) & (t == 1)
+        label_escr = (y == 1) & (t == 0)
+        
+        # 强转为 float32 执行纯粹的 binary_cross_entropy，消灭 autocast 报错
+        loss_estr = F.binary_cross_entropy(p_estr, label_estr.float())
+        loss_escr = F.binary_cross_entropy(p_escr, label_escr.float())
     
-    # 1.2 ESTR Loss: P(Y=1, W=1|X) = mu_1 * pi
-    # Label: 只有被干预且转化了，y_estr 才为 1
-    p_estr = torch.clamp(p_mu1 * p_pi, 1e-7, 1.0 - 1e-7)
-    y_estr = ((targets == 1) & (treatment == 1)).float()
-    loss_estr = F.binary_cross_entropy(p_estr, y_estr)
+    # 3. L_CrossTR & L_CrossCR: 交叉反向样本掩码约束损失 (Safe for autocast)
+    treat_mask = (t == 1)
+    control_mask = (t == 0)
     
-    # 1.3 ESCR Loss: P(Y=1, W=0|X) = mu_0 * (1 - pi)
-    # Label: 只有未被干预且转化了，y_escr 才为 1
-    p_escr = torch.clamp(p_mu0 * (1.0 - p_pi), 1e-7, 1.0 - 1e-7)
-    y_escr = ((targets == 1) & (treatment == 0)).float()
-    loss_escr = F.binary_cross_entropy(p_escr, y_escr)
+    # CrossTR: mean_{W=1} BCE(mu0_logit + tau_logit, Y)
+    if treat_mask.sum() > 0:
+        cross_tr_pred = mu0_logit[treat_mask] + tau_logit[treat_mask]
+        loss_crosstr = F.binary_cross_entropy_with_logits(cross_tr_pred, y[treat_mask].float())
+    else:
+        loss_crosstr = torch.tensor(0.0, device=device)
+        
+    # CrossCR: mean_{W=0} BCE(mu1_logit - tau_logit, Y)
+    if control_mask.sum() > 0:
+        cross_cr_pred = mu1_logit[control_mask] - tau_logit[control_mask]
+        loss_crosscr = F.binary_cross_entropy_with_logits(cross_cr_pred, y[control_mask].float())
+    else:
+        loss_crosscr = torch.tensor(0.0, device=device)
+
+    # 4. 融合调参权重组合
+    w_alpha = trial_cfg.get("descn_alpha", 0.5)
+    w_beta1 = trial_cfg.get("descn_beta1", 1.0)
+    w_beta0 = trial_cfg.get("descn_beta0", 1.0)
+    w_gamma1 = trial_cfg.get("descn_gamma1", 0.5)  
+    w_gamma0 = trial_cfg.get("descn_gamma0", 0.1)
     
-    # ---------------------------------------------------------
-    # 模块 2: X-Network Loss (Paper Eq 6)
-    # ---------------------------------------------------------
-    # 论文精髓：在 Logit 空间进行加减，避免 sigmoid 溢出
-    cross_mu1_logit = mu0_logit + tau_logit
-    cross_mu0_logit = mu1_logit - tau_logit
+    total_loss = (w_alpha * loss_pi + 
+                  w_beta1 * loss_estr + 
+                  w_beta0 * loss_escr + 
+                  w_gamma1 * loss_crosstr + 
+                  w_gamma0 * loss_crosscr)
     
-    # 2.1 CrossTR Loss (仅在 T=1 样本上计算)
-    l_cross_tr_all = F.binary_cross_entropy_with_logits(cross_mu1_logit, targets.float(), reduction='none')
-    loss_crosstr = (l_cross_tr_all * treatment.float()).sum() / (treatment.float().sum() + 1e-8)
-    
-    # 2.2 CrossCR Loss (仅在 T=0 样本上计算)
-    l_cross_cr_all = F.binary_cross_entropy_with_logits(cross_mu0_logit, targets.float(), reduction='none')
-    loss_crosscr = (l_cross_cr_all * (1.0 - treatment.float())).sum() / ((1.0 - treatment.float()).sum() + 1e-8)
-    
-    # ---------------------------------------------------------
-    # 总 Loss 融合 (Paper Eq 7)
-    # ---------------------------------------------------------
-    # 提取权重参数 (如果没传，默认都是 1.0)
-    alpha = config.get("descn_alpha", 1.0)   # pi weight
-    beta1 = config.get("descn_beta1", 1.0)   # estr weight
-    beta0 = config.get("descn_beta0", 1.0)   # escr weight
-    gamma1 = config.get("descn_gamma1", 1.0) # crosstr weight
-    gamma0 = config.get("descn_gamma0", 1.0) # crosscr weight
-    
-    total_loss = (alpha * loss_pi + 
-                  beta1 * loss_estr + beta0 * loss_escr + 
-                  gamma1 * loss_crosstr + gamma0 * loss_crosscr)
-    
-    loss_components = {
-        "descn_loss_pi": loss_pi.item(),
-        "descn_loss_estr": loss_estr.item(),
-        "descn_loss_escr": loss_escr.item(),
-        "descn_loss_crosstr": loss_crosstr.item(),
-        "descn_loss_crosscr": loss_crosscr.item()
+    loss_comp = {
+        "loss_pi": loss_pi.item(),
+        "loss_estr": loss_estr.item(),
+        "loss_escr": loss_escr.item(),
+        "loss_crosstr": loss_crosstr.item(),
+        "loss_crosscr": loss_crosscr.item()
     }
     
-    return total_loss, loss_components
+    return total_loss, loss_comp
 
 # ==========================================
 # 本地验证脚本 (If __main__)

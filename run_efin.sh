@@ -1,0 +1,1 @@
+python main.py --task train_y --model EFIN --version y_baseline_efin --cuda 0
