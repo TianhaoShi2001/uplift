@@ -1238,6 +1238,152 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "mt_c_weight": tune.grid_search([1.0, 2.0, 5.0]), # 探索辅助任务拉扯的力度
                 "loss_types": tune.grid_search([["bce"]]),        # Baseline 保持纯净
             })
+# ==========================================================
+        # 🟢 [前4组] PureV10 核心蛊王战区
+        # ==========================================================
+# ==========================================================
+        # 🟢 [1-8 组] PureV10 核心参数化强灌战区 (全面重构去 group 命名)
+        # ==========================================================
+        elif version == "y_pure_v10_h32_a1.0_wd1e4":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[32]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([1.0]), "conflict_alpha_gold": tune.grid_search([1.0]), "conflict_alpha_walkin": tune.grid_search([1.0]), 
+                "weight_decay": tune.grid_search([0.0001]),
+            })
+        elif version == "y_pure_v10_h16_a5.0_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[16]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([5.0]), "conflict_alpha_gold": tune.grid_search([5.0]), "conflict_alpha_walkin": tune.grid_search([5.0]), 
+                "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_pure_v10_h64_32_a0.5_wd1e4":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[64, 32]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.5]), "conflict_alpha_gold": tune.grid_search([0.5]), "conflict_alpha_walkin": tune.grid_search([0.5]), 
+                "weight_decay": tune.grid_search([0.0001]),
+            })
+        elif version == "y_pure_v10_h16_a1.0_wd1e4":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[16]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([1.0]), "conflict_alpha_gold": tune.grid_search([1.0]), "conflict_alpha_walkin": tune.grid_search([1.0]), 
+                "weight_decay": tune.grid_search([0.0001]),
+            })
+        elif version == "y_pure_v10_hNone_a0.5_5.0_1.0_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([None]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.5]), "conflict_alpha_gold": tune.grid_search([5.0]), "conflict_alpha_walkin": tune.grid_search([1.0]), 
+                "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_pure_v10_hNone_a0.5_10.0_0.5_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([None]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.5]), "conflict_alpha_gold": tune.grid_search([10.0]), "conflict_alpha_walkin": tune.grid_search([0.5]), 
+                "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_pure_v10_hNone_a0.5_0.5_0.1_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([None]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.5]), "conflict_alpha_gold": tune.grid_search([0.5]), "conflict_alpha_walkin": tune.grid_search([0.1]), 
+                "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_pure_v10_hNone_a0.5_0.5_5.0_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([None]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.5]), "conflict_alpha_gold": tune.grid_search([0.5]), "conflict_alpha_walkin": tune.grid_search([5.0]), 
+                "weight_decay": tune.grid_search([1e-05]),
+            })
+
+        # ==========================================================
+        # 🔵 [9-17 组] Ours V8 S6 参数化强灌战区 (精准挂载 v8_s6 拓扑)
+        # ==========================================================
+        elif version == "y_ours_v8s6_h32_a10.0_t1_wd0.01":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[32]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([10.0]), "conflict_alpha_gold": tune.grid_search([10.0]), "conflict_alpha_walkin": tune.grid_search([10.0]), 
+                "ours_s6_temp": tune.grid_search([1.0]), "weight_decay": tune.grid_search([0.01]),
+            })
+        elif version == "y_ours_v8s6_h32_a0.1_t20_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[32]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.1]), "conflict_alpha_gold": tune.grid_search([0.1]), "conflict_alpha_walkin": tune.grid_search([0.1]), 
+                "ours_s6_temp": tune.grid_search([20.0]), "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_ours_v8s6_h32_a0.5_t20_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[32]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.5]), "conflict_alpha_gold": tune.grid_search([0.5]), "conflict_alpha_walkin": tune.grid_search([0.5]), 
+                "ours_s6_temp": tune.grid_search([20.0]), "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_ours_v8s6_h32_a10.0_t20_wd0.01":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[32]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([10.0]), "conflict_alpha_gold": tune.grid_search([10.0]), "conflict_alpha_walkin": tune.grid_search([10.0]), 
+                "ours_s6_temp": tune.grid_search([20.0]), "weight_decay": tune.grid_search([0.01]),
+            })
+        elif version == "y_ours_v8s6_hNone_a1.0_t20_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([None]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([1.0]), "conflict_alpha_gold": tune.grid_search([1.0]), "conflict_alpha_walkin": tune.grid_search([1.0]), 
+                "ours_s6_temp": tune.grid_search([20.0]), "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_ours_v8s6_hNone_a1.0_t1_wd0.001":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([None]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([1.0]), "conflict_alpha_gold": tune.grid_search([1.0]), "conflict_alpha_walkin": tune.grid_search([1.0]), 
+                "ours_s6_temp": tune.grid_search([1.0]), "weight_decay": tune.grid_search([0.001]),
+            })
+        elif version == "y_ours_v8s6_h16_a0.1_t1_wd1e5":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[16]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([0.1]), "conflict_alpha_gold": tune.grid_search([0.1]), "conflict_alpha_walkin": tune.grid_search([0.1]), 
+                "ours_s6_temp": tune.grid_search([1.0]), "weight_decay": tune.grid_search([1e-05]),
+            })
+        elif version == "y_ours_v8s6_h32_16_a5.0_t1_wd0.001":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[32, 16]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([5.0]), "conflict_alpha_gold": tune.grid_search([5.0]), "conflict_alpha_walkin": tune.grid_search([5.0]), 
+                "ours_s6_temp": tune.grid_search([1.0]), "weight_decay": tune.grid_search([0.001]),
+            })
+        elif version == "y_ours_v8s6_h16_a10.0_t1_wd0.01":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), "c_fusion_mode": tune.grid_search(["ours_v8_s6"]), 
+                "loss_types": tune.grid_search([["prior_conflict"]]), "head_hidden_dims": tune.grid_search([[16]]),
+                "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([10.0]), "conflict_alpha_gold": tune.grid_search([10.0]), "conflict_alpha_walkin": tune.grid_search([10.0]), 
+                "ours_s6_temp": tune.grid_search([1.0]), "weight_decay": tune.grid_search([0.01]),
+            })
         else:
             space.update({
                 "c_fusion_mode": tune.grid_search(["none"]),

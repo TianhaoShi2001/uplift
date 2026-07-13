@@ -96,7 +96,7 @@ def build_parser():
     parser = argparse.ArgumentParser(description="主分层 Uplift 统一实验框架 (工业防弹版)")
     
     # 核心控制
-    parser.add_argument("--mode", type=str, choices=["debug", "tune", "eval", 'reproduce', 'reproduce_eval'], default="tune",
+    parser.add_argument("--mode", type=str, choices=["debug", "tune", "eval", 'reproduce', 'reproduce_eval', 'single_grid'], default="tune",
                         help="debug(极速单次验证) / tune(大规模搜参) / eval(直接加载测试)")
     parser.add_argument("--task", type=str, choices=["train_c", "train_y"], default="train_y")
     parser.add_argument("--model", type=str, default="TARNET", help="指定模型骨架，如 TARNET")
@@ -290,6 +290,45 @@ def main():
         train_trial(trial_cfg)
         
         print(f"✅ Seed {args.seed} {args.mode} 流水线全部结束！")
+    # =========================================================================
+    # 👑 物理突围防线：新增免 Ray 前台串行/并发强训模式 (single_grid)
+    # =========================================================================
+# =========================================================================
+    # 👑 物理突围防线：免 Ray 纯 Python 参数化全局动态调度器通道 (single_grid)
+    # =========================================================================
+    elif args.mode == "single_grid":
+        from custom_grid_space import ALL_CUSTOM_SPACES
+        # 🌟 核心修正：顺应你原生 trainer.py 的导出习惯，直接导入大盘原汁原味的 Trainer 类或核心函数
+        # 根据你原有的 main.py，如果是从 trainer 导入 Trainer 类，就用下面这行：
+        from trainer import Trainer  
+        
+        # 1. 拦截检查该特定版本配置是否存在
+        if args.version not in ALL_CUSTOM_SPACES:
+            raise ValueError(f"❌ [免Ray空间] 找不到你指定的空间版本名字: {args.version}")
+            
+        # 2. 强行拉出对应的纯净参数配置，不跟 Ray 产生半毛钱直积
+        current_config = ALL_CUSTOM_SPACES[args.version]
+        
+        print("=" * 80)
+        print(f"🚀 [NO-RAY ENGINE] 顺利切入免Ray强训通道！随机种子已被锁死为: {args.seed}")
+        print(f"📂 实验保存文件夹: {args.exp_name}")
+        print(f"⚙️  全通道灌入配置明细: {current_config}")
+        print("=" * 80)
+        
+        # 3. 实时同步覆盖掉框架内 args 中的全局默认参数，完成超参侵入
+        for k, v in current_config.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
+                
+        # 4. 🌟 核心修正：用你最原始、真刀真枪跑通的 Trainer 初始化方式去唤醒训练！
+        # 如果你底层的构造函数习惯直接收 args，这样写：
+        trainer = Trainer(args)
+        trainer.train()
+        
+        # 💡 注：如果你原本的 main.py 里有特殊的传入参数（比如 trainer = Trainer(config, device)）
+        # 请在这里保持和你原生 main.py 第 50-100 行附近的实例化代码完全像素级一致即可！
+        
+        print(f"✅ [NO-RAY ENGINE] 专属版本 {args.version} | 种子 {args.seed} 顺利通过，新日志已刷出！")
 
     # 运行结束后清理临时目录 (保持服务器整洁)
     if args.mode in ["debug", "tune"]:

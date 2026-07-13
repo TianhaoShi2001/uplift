@@ -13,6 +13,33 @@ from data_pipeline import UpliftDataset, uplift_collate_fn
 from models import *
 from losses import *
 from evaluator import evaluate_and_dump
+import numpy as np
+def set_all_seeds(seed):
+    """
+    全方位锁定随机性，确保分布式/多卡环境下实验可复现
+    """
+    import random
+    import torch # 假设你的项目基于 Torch
+    
+    # 1. 基本随机性锁定
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    
+    # 2. PyTorch 随机性锁定
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed) # 针对多卡环境
+    
+    # 3. 确定性算法锁定 (牺牲极小性能换取 100% 复现)
+    # 强制 CUDNN 使用确定的卷积算法
+    torch.backends.cudnn.deterministic = True 
+    torch.backends.cudnn.benchmark = False
+    
+    # 针对新版本 Torch 的严苛模式（可选，如果某些算子不支持会报错）
+    # torch.use_deterministic_algorithms(True, warn_only=True)
+    
+    print(f"🎯 随机种子已锁定为: {seed} (包含 Python, NumPy, Torch, CUDNN)")
 
 # ==========================================
 # 🛡️ 史上最稳的 Ray 汇报器
@@ -117,7 +144,8 @@ def build_model(config, data_spec, device):
                 return TARNET_V8_Evolution_MoE(
                     continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], c_model=model_c,
                     v8_scheme=config.get("v8_scheme", 3), shared_emb_dim=config["hidden_dims"][-1], truncation_pct=config.get("truncation_pct", 0.05), truncation_temp=config.get("truncation_temp", 10.0), ema_momentum=config.get("ema_momentum", 0.9),
-                    head_hidden_dims=head_hidden_dims
+                    head_hidden_dims=head_hidden_dims,
+                    align_temp = config.get('align_temp', 1)
                 ).to(device)
                 
             elif config.get("c_fusion_mode") == "v11_aligned_moe":
@@ -491,7 +519,7 @@ def train_trial(trial_cfg):
     
     mode = trial_cfg.get("mode", "tune")
     seed = trial_cfg.get("seed", 42)
-
+    set_all_seeds(seed)
     max_steps = trial_cfg.get("max_steps_per_epoch", float('inf'))
     run_hier = trial_cfg.get("run_hierarchy", "default_run")
 
