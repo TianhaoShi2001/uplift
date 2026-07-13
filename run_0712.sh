@@ -8,7 +8,7 @@ ulimit -n 65536
 # -------------------------------------------------------------------------
 # 🛠️ 显卡资源自由指定配置（支持卡号自定义）
 # -------------------------------------------------------------------------
-NUM_GPU=0.1     # 每个 Trial 占用的 GPU 份额
+NUM_GPU=0.11     # 每个 Trial 占用的 GPU 份额
 CUDA_A="3,0"       # 🎯 流水线 A 绑定的 GPU 卡号 (负责跑无 Focal 托底的经典基线组)
 CUDA_B="1"       # 🎯 流水线 B 绑定的 GPU 卡号 (负责跑带全球边界限制的 Global Bounded Focal 组)
 LOG_DIR="experiment_logs_ours_s4"
@@ -29,7 +29,7 @@ echo "========================================================"
     
     echo "▶️ [流水线 A] 正在训练: Ours S4 + Both (Focal: None) 容量探索..."
     # 通过环境变量或额外的条件可以在代码中过滤，若 search_space 已经全包，直接单起搜参即可
-    python main.py --mode tune --task train_y --model TARNET --version y_ours_s6_conflict_0710_alpha_search_temp1_20 --exp_name y_ours_s6_conflict_0710_alpha_search_temp1_20 --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_y_ours_s6_conflict_0710_alpha_search_temp1_20.txt 2>&1
+    python main.py --mode tune --task train_y --model TARNET --version y_v8_s6_temp_10_20_v10_all_mix_original_code_search_head_wd_alpha_same --exp_name y_v8_s6_temp_10_20_v10_all_mix_original_code_search_head_wd_alpha_same --cuda $CUDA_A --num_per_gpu $NUM_GPU # > $LOG_DIR/log_y_ours_s4_conflict_0710_search_alpha_res_2_search_head.txt 2>&1
     
     echo "✅ [流水线 A] Focal: None 组探索全部收网。"
 ) 

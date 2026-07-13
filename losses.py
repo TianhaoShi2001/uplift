@@ -340,10 +340,14 @@ def compute_stage3_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config, d
             weights = torch.clamp(weights, max=max_weight_thres)
 
         # 7. 均值归一化防梯度崩盘
-        # weights = weights / (weights.mean() + 1e-8)
+        weights = weights / (weights.mean() + 1e-8)
         conflict_loss = (bce_raw * weights).mean()
         total_loss += conflict_loss
         loss_components["conflict_loss"] = conflict_loss.item()
+    else:
+        bce_loss = bce_raw.mean()
+        total_loss += bce_loss
+        loss_components["bce_loss"] = bce_loss.item()
 
     # elif "prior_conflict" in loss_types:
     #     pi_01 = pi_dict["p_complier"].detach()

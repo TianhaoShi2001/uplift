@@ -116,7 +116,8 @@ def build_model(config, data_spec, device):
             elif config.get("c_fusion_mode") == "v8_evolution_moe":
                 return TARNET_V8_Evolution_MoE(
                     continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config["hidden_dims"], dropout_rate=config["dropout_rate"], c_model=model_c,
-                    v8_scheme=config.get("v8_scheme", 3), shared_emb_dim=config["hidden_dims"][-1], truncation_pct=config.get("truncation_pct", 0.05), truncation_temp=config.get("truncation_temp", 10.0), ema_momentum=config.get("ema_momentum", 0.9)
+                    v8_scheme=config.get("v8_scheme", 3), shared_emb_dim=config["hidden_dims"][-1], truncation_pct=config.get("truncation_pct", 0.05), truncation_temp=config.get("truncation_temp", 10.0), ema_momentum=config.get("ema_momentum", 0.9),
+                    head_hidden_dims=head_hidden_dims
                 ).to(device)
                 
             elif config.get("c_fusion_mode") == "v11_aligned_moe":

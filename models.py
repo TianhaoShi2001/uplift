@@ -981,33 +981,46 @@ class TARNET_Residual_MoE(TARNET_Proposed):
         # 3. 🌟🌟🌟 核心对齐改进：重构残差专家 (Residual Experts) 🌟🌟🌟
         # 让残差塔的非线性层数和宽度，与上面的主力大盘预测头完全 1:1 镜像对齐
         def build_res_expert():
-            if head_hidden_dims and len(head_hidden_dims) > 0:
-                # 构建对齐的 Y0 残差网络
-                r0_layers = []
-                c_dim = curr_dim
-                for dim in head_hidden_dims:
-                    r0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
-                    c_dim = dim
-                r0_layers.append(nn.Linear(c_dim, 1))
-                res_0_net = nn.Sequential(*r0_layers)
-                
-                # 构建对齐的 Y1 残差网络
-                r1_layers = []
-                c_dim = curr_dim
-                for dim in head_hidden_dims:
-                    r1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
-                    c_dim = dim
-                r1_layers.append(nn.Linear(c_dim, 1))
-                res_1_net = nn.Sequential(*r1_layers)
-            else:
-                # 如果没有传入 head_hidden_dims，则保持极简单层（退化兼容）
-                res_0_net = nn.Linear(curr_dim, 1)
-                res_1_net = nn.Linear(curr_dim, 1)
-
             return nn.ModuleDict({
-                'res_0': res_0_net,
-                'res_1': res_1_net
+                'res_0': nn.Sequential(
+                    nn.Linear(curr_dim, curr_dim // 2), 
+                    nn.ReLU(), 
+                    nn.Linear(curr_dim // 2, 1)
+                ),
+                'res_1': nn.Sequential(
+                    nn.Linear(curr_dim, curr_dim // 2), 
+                    nn.ReLU(), 
+                    nn.Linear(curr_dim // 2, 1)
+                )
             })
+        # def build_res_expert():
+        #     if head_hidden_dims and len(head_hidden_dims) > 0:
+        #         # 构建对齐的 Y0 残差网络
+        #         r0_layers = []
+        #         c_dim = curr_dim
+        #         for dim in head_hidden_dims:
+        #             r0_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+        #             c_dim = dim
+        #         r0_layers.append(nn.Linear(c_dim, 1))
+        #         res_0_net = nn.Sequential(*r0_layers)
+                
+        #         # 构建对齐的 Y1 残差网络
+        #         r1_layers = []
+        #         c_dim = curr_dim
+        #         for dim in head_hidden_dims:
+        #             r1_layers.extend([nn.Linear(c_dim, dim), nn.ReLU()])
+        #             c_dim = dim
+        #         r1_layers.append(nn.Linear(c_dim, 1))
+        #         res_1_net = nn.Sequential(*r1_layers)
+        #     else:
+        #         # 如果没有传入 head_hidden_dims，则保持极简单层（退化兼容）
+        #         res_0_net = nn.Linear(curr_dim, 1)
+        #         res_1_net = nn.Linear(curr_dim, 1)
+
+        #     return nn.ModuleDict({
+        #         'res_0': res_0_net,
+        #         'res_1': res_1_net
+        #     })
 
         # 实例化三个拥有完美公平非线性容量的对齐残差塔
         self.res_never = build_res_expert()
@@ -1765,10 +1778,11 @@ class TARNET_V8_Evolution_MoE(TARNET_Residual_MoE):
                  truncation_pct: float = 0.05,   
                  truncation_temp: float = 10.0,
                  ema_momentum: float = 0.9,
-                 align_temp: float = 1.0):
+                 align_temp: float = 1.0,
+                 head_hidden_dims: list = None):
         
         super().__init__(continuous_dim, categorical_cardinalities, hidden_dims, 
-                         dropout_rate, c_model, embedding_dim)
+                         dropout_rate, c_model, embedding_dim,head_hidden_dims=head_hidden_dims)
         
         self.v8_scheme = v8_scheme
         self.truncation_pct = truncation_pct
@@ -2462,136 +2476,126 @@ class EUEN(nn.Module):
 # =========================================================================
 class EFIN(nn.Module):
     """
-    EFIN 官方规格书标准对齐版 (彻底移除任何伪参数，K 由输入特征总列数自动物理推导)。
-    拓扑结构：
-    φ -> x_rep [B, K, R]
-         ├─ Control:  L2norm -> SelfAttn -> flatten(K·R) -> c_MLP -> c_logit
-         └─ Uplift:   t_rep(ones) + InteractionAttn(·, x_rep) -> u_MLP -> t_logit, u_tau
+    EFIN 官方规格书 S11.2 最小 Diff 完美对齐审计版
+    👑 物理拓扑铁律全面拨反：
+    1. L2 归一化严格沿 K 维 (dim=1) 推进。
+    2. 特征进场严格物理切块 (Chunk Proj)，杜绝整段 φ 重复过 Linear。
+    3. 砍掉 MLP 中间多余层，回归 3 层漏斗拓扑；所有 Attn 层 bias=False。
+    4. 下限截断强制修正为 max(R // X, 1)。
     """
     def __init__(self, continuous_dim: int, categorical_cardinalities: dict, 
                  efin_rank: int = 64, dropout_rate: float = 0.0):
         super().__init__()
         
-        self.R = efin_rank  # 唯一隐藏层宽度控制旋钮 (R)
-        
-        # 👑 物理铁律：K 严格等于原始连续特征维数 + 离散特征组数，无需从外部传伪参数
+        self.R = efin_rank  # 唯一隐藏层宽度旋钮
         categorical_cardinalities = categorical_cardinalities or {}
-        self.K = continuous_dim + len(categorical_cardinalities)
+        self.K = continuous_dim + len(categorical_cardinalities)  # 随表动态适配的 K
         
-        # 基础组件：特征编码器
+        # 1. 物理特征编码与精准切块投影 (Chunk Projection)
         self.base_encoder = FeatureEncoder(continuous_dim, categorical_cardinalities)
         input_dim = self.base_encoder.output_dim
         
-        # 虚拟特征块投影矩阵 (将展平特征 φ 分离切成 K 个独立的虚拟特征块 [B, K, R])
+        # 计算每一块虚拟特征对应的物理特征维度 (Criteo 等长切分或自适应切分)
+        self.chunk_dim = input_dim // self.K
+        # 针对每个 chunk 分配独立的局部投影矩阵，生成纯正的 [B, K, R]
         self.virtual_projectors = nn.ModuleList([
-            nn.Linear(input_dim, self.R) for _ in range(self.K)
+            nn.Linear(self.chunk_dim, self.R) for _ in range(self.K)
         ])
         
         # -----------------------------------------------------------------
-        # 🟢 Control 分支 (自然响应通路 μ0)
+        # 🟢 Control 分支 (Git 3层拓扑 + Attn bias=False)
         # -----------------------------------------------------------------
-        # 专属 Self-Attention: softmax(sigmoid(QK^T/√d))
         self.W_q = nn.Linear(self.R, self.R, bias=False)
         self.W_k = nn.Linear(self.R, self.R, bias=False)
         self.W_v = nn.Linear(self.R, self.R, bias=False)
         self.scale = self.R ** 0.5
         
-        # Control MLP 漏斗拓扑: 宽度按 R 比例逐渐收缩 (K·R -> R -> R -> R/2 -> R/4)
+        # 3层拓扑：输入层(K*R -> R) -> 漏斗1(R -> R/2) -> 漏斗2(R/2 -> R/4)
         self.control_mlp = nn.Sequential(
             nn.Linear(self.K * self.R, self.R),
             nn.ELU(),
-            nn.Linear(self.R, self.R),
+            nn.Linear(self.R, max(self.R // 2, 1)),
             nn.ELU(),
-            nn.Linear(self.R, max(16, self.R // 2)),
-            nn.ELU(),
-            nn.Linear(max(16, self.R // 2), max(8, self.R // 4)),
+            nn.Linear(max(self.R // 2, 1), max(self.R // 4, 1)),
             nn.ELU()
         )
-        self.c_logit_head = nn.Linear(max(8, self.R // 4), 1)
+        self.c_logit_head = nn.Linear(max(self.R // 4, 1), 1)
         
         # -----------------------------------------------------------------
-        # 🔵 Uplift 分支 (增量响应通路 τ + 倾向分约束 t_logit)
+        # 🔵 Uplift 分支 (Git 3层拓扑 + Attn bias=False)
         # -----------------------------------------------------------------
-        # 虚拟 Treatment 特征生成层: 输入全 1 虚拟向量
         self.t_rep_layer = nn.Linear(1, self.R, bias=False)
         nn.init.xavier_uniform_(self.t_rep_layer.weight)
         
-        # 专属 Interaction Attention 映射参数 (三个网络全共享)
-        self.att1 = nn.Linear(self.R, self.R)
-        self.att2 = nn.Linear(self.R, self.R)
+        # 严格对齐 Git: Attention 交互层无 bias
+        self.att1 = nn.Linear(self.R, self.R, bias=False)
+        self.att2 = nn.Linear(self.R, self.R, bias=False)
         self.att3 = nn.Linear(self.R, 1, bias=False)
         
-        # Uplift MLP 漏斗拓扑: 接收聚合敏感特征后的 e_xt 表征层 (R -> R -> R/2 -> R/4)
         self.uplift_trunk = nn.Sequential(
             nn.Linear(self.R, self.R),
             nn.ELU(),
-            nn.Linear(self.R, self.R),
+            nn.Linear(self.R, max(self.R // 2, 1)),
             nn.ELU(),
-            nn.Linear(self.R, max(16, self.R // 2)),
-            nn.ELU(),
-            nn.Linear(max(16, self.R // 2), max(8, self.R // 4)),
+            nn.Linear(max(self.R // 2, 1), max(self.R // 4, 1)),
             nn.ELU()
         )
-        # 同源分叉输出头
-        self.u_tau_head = nn.Linear(max(8, self.R // 4), 1)
-        self.intervention_head = nn.Linear(max(8, self.R // 4), 1)
+        self.u_tau_head = nn.Linear(max(self.R // 4, 1), 1)
+        self.intervention_head = nn.Linear(max(self.R // 4, 1), 1)
 
     def forward(self, x_cont, x_cat):
-        device = x_cont.device if x_cont is not None else next(self.parameters()).device
         B = x_cont.shape[0] if x_cont is not None else x_cat[list(x_cat.keys())[0]].shape[0]
+        device = x_cont.device if x_cont is not None else next(self.parameters()).device
         
-        # 1. 基础展平编码 [B, Raw_Dim]
+        # a. 先行提取完整长编码特征
         phi = self.base_encoder(x_cont, x_cat)
         
-        # 2. 物理划分 K 块，构建标准的虚拟特征表达阵列 [B, K, R]
-        x_rep = torch.stack([proj(phi) for proj in self.virtual_projectors], dim=1)
+        # b. 核心修正：真正将 φ 切成 K 块（每块维度为 chunk_dim），独立投影进 [B, K, R]
+        x_chunks = [phi[:, i*self.chunk_dim : (i+1)*self.chunk_dim] for i in range(self.K)]
+        x_rep = torch.stack([proj(chunk) for proj, chunk in zip(self.virtual_projectors, x_chunks)], dim=1)
         
         # =================================================================
-        # 🟢 Control 分支前向 (物理 L2 Norm + 特异 Self-Attn)
+        # 🟢 Control 分支 (L2 归一化轴修正 + Self-Attn)
         # =================================================================
-        # L2 归一化锁死特征
-        x_rep_norm = F.normalize(x_rep, p=2, dim=-1)
+        # 🌟 核心修复：必须沿 K 维（dim=1）进行 L2 归一化对齐
+        x_rep_norm = F.normalize(x_rep, p=2, dim=1)
         
-        # 执行 Softmax(Sigmoid(QK^T/√d))
         Q = self.W_q(x_rep_norm)
         K = self.W_k(x_rep_norm)
         V = self.W_v(x_rep_norm)
         
         scores = torch.sigmoid(torch.matmul(Q, K.transpose(-1, -2)) / self.scale)
         attn_weights = F.softmax(scores, dim=-1)
-        attn_out = torch.matmul(attn_weights, V) # [B, K, R]
+        attn_out = torch.matmul(attn_weights, V)
         
-        # 展平并过漏斗 Control MLP -> 得到控制组基线
+        # 3层漏斗推进 -> c_logit
         c_hidden = self.control_mlp(attn_out.reshape(B, -1))
         c_logit = self.c_logit_head(c_hidden).squeeze(-1)
         
         # =================================================================
-        # 🔵 Uplift 分支前向 (接原始 x_rep + 虚拟 t_rep 交互)
+        # 🔵 Uplift 分支 (原始 x_rep 门控加权 + 3层同源分叉)
         # =================================================================
-        # 构造全 1 虚拟变量，生成标准 e^t 空间 [B, R]
         ones_t = torch.ones((B, 1), dtype=torch.float32, device=device)
         t_rep = self.t_rep_layer(ones_t)
         
-        # Interaction Attn 接收【原始 x_rep】，绝对不碰 Control 路的特征
-        t_part = torch.sigmoid(self.att1(t_rep)).unsqueeze(1) # [B, 1, R]
-        x_part = torch.sigmoid(self.att2(x_rep))              # [B, K, R]
+        # Interaction Attn 吃原始 x_rep
+        t_part = torch.sigmoid(self.att1(t_rep)).unsqueeze(1)
+        x_part = torch.sigmoid(self.att2(x_rep))
         
-        # 多门控加权聚合 -> 炼出敏感特征 e_xt [B, R]
-        alpha = F.softmax(self.att3(F.relu(t_part + x_part)), dim=1) # [B, K, 1]
-        e_xt = torch.sum(alpha * x_rep, dim=1)                       # [B, R]
+        alpha = F.softmax(self.att3(F.relu(t_part + x_part)), dim=1)
+        e_xt = torch.sum(alpha * x_rep, dim=1)
         
-        # 送入 Uplift 骨架，并在最末层同源双分叉
+        # 3层同源分叉推进 -> t_logit, u_tau
         uplift_hidden = self.uplift_trunk(e_xt)
         u_tau = self.u_tau_head(uplift_hidden).squeeze(-1)
         t_logit = self.intervention_head(uplift_hidden).squeeze(-1)
         
         # =================================================================
-        # 👑 结果融合空间 (严格执行控制组 logit 分支梯度阻断，保护增量稳定性)
+        # 👑 梯度隔离与合成 (y0 = c_logit, y1 = c_logit.detach() + u_tau)
         # =================================================================
         y0_logit = c_logit
         y1_logit = c_logit.detach() + u_tau
         
-        # 返回标准格式，回传倾向分类器约束 logit 供损失函数捕获
         return y0_logit, y1_logit, {"efin_t_logit": t_logit}
 
 # ==========================================

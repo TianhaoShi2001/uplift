@@ -58,7 +58,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
 
     space = {
         "learning_rate": tune.grid_search([1e-3]),
-        "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3]),
+        "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]), # , 1e-3
         "hidden_dims": tune.grid_search([[128, 64, 32]]), 
         "dropout_rate": tune.grid_search([0.0]),
         "batch_size": tune.grid_search([65536*4]),
@@ -223,55 +223,87 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "conflict_alpha_walkin": tune.grid_search([0.1, 0.5, 1.0, 5.0, 10.0]), # 🌟 精准修正搜索范围
             })
 
-        # --- [实验 4/6: 混合全激活 - 三人群(All)共享同一爆破参数] ---
+# --- [实验 4/7: 混合全激活 - 三人群(All)共享同一爆破参数] ---
         elif version == "y_pure_v10_mix_all_same_alpha":
-            alpha_grid = [0.1, 0.5, 1.0, 5.0, 10.0] # 🌟 精准修正共享步长范围
             space.update({
                 "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
                 "c_fusion_mode": tune.grid_search(["res_moe"]),
                 "loss_types": tune.grid_search([["prior_conflict"]]),
                 "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
                 "conflict_mode": tune.grid_search(["all"]), 
-                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
-                "conflict_alpha_gold": tune.grid_search(alpha_grid),   
-                "conflict_alpha_walkin": tune.grid_search(alpha_grid), 
+                # 🌟 核心联动：只让 wool 走网格搜索，5 档
+                "conflict_alpha_wool": tune.grid_search([1.0, 5.0]),  #  0.1, 0.5, 
+                # 🌟 强行视线对齐，绝对不产生直积裂变！
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),   
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]), 
             })
 
-        # --- [实验 5/6: 经典双向对齐 - 羊毛+金子(Both)共享同一老版机制参数] ---
+        # --- [实验 5/7: 经典双向对齐 - 羊毛+金子(Both)共享同一老版机制参数] ---
         elif version == "y_pure_v10_mix_both_same_alpha":
-            alpha_grid = [0.1, 0.5, 1.0, 5.0, 10.0] # 🌟 精准修正共享步长范围
             space.update({
                 "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
                 "c_fusion_mode": tune.grid_search(["res_moe"]),
                 "loss_types": tune.grid_search([["prior_conflict"]]),
                 "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
                 "conflict_mode": tune.grid_search(["wool_gold"]), 
-                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
-                "conflict_alpha_gold": tune.grid_search(alpha_grid),   
+                # 🌟 核心联动：wool 主控 5 档
+                "conflict_alpha_wool": tune.grid_search([1.0, 5.0, 10.0]),   # 0.1, 0.5, 
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),   
             })
+
+        # --- [实验 5/7-Head: 经典双向对齐 + 多档预测头探索] ---
         elif version == "y_pure_v10_mix_both_same_alpha_head":
-            alpha_grid = [1.0, 10.0] # 🌟 精准修正共享步长范围
             space.update({
                 "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
                 "c_fusion_mode": tune.grid_search(["res_moe"]),
                 "loss_types": tune.grid_search([["prior_conflict"]]),
-                "head_hidden_dims": tune.grid_search([32],[64,32],[128,64,32],[32,32]),           # 🌟 默认 None 走 naked linear 头
+                # 4 档 head 拓扑 × 2 档 alpha = 严格控制在 8 组试验！
+                "head_hidden_dims": tune.grid_search([[32], [64, 32], [128, 64, 32], [32, 32]]),  
                 "conflict_mode": tune.grid_search(["wool_gold"]), 
-                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
-                "conflict_alpha_gold": tune.grid_search(alpha_grid),   
+                # 🌟 核心联动：同步 2 档 alpha 变化
+                "conflict_alpha_wool": tune.grid_search([1.0, 10.0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),   
             })
 
-        # --- [实验 6/6: 🌟 新增特定双向组合 - 羊毛+自然进店(Wool+Walkin)共享同一参数] ---
+        elif version == "y_pure_v10_all_same_alpha_head_0710":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                # 4 档 head 拓扑 × 2 档 alpha = 严格控制在 8 组试验！
+                "head_hidden_dims": tune.grid_search([[32], [64, 32], [32,16], None, [16]]),  
+                "weight_decay": tune.grid_search([1e-5, 1e-4,]), # , 1e-3
+                "conflict_mode": tune.grid_search(["ALL"]), 
+                # 🌟 核心联动：同步 2 档 alpha 变化
+                "conflict_alpha_wool": tune.grid_search([1.0, 5, 0.5]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+
+        # --- [实验 6/7: 特定双向组合 A - 羊毛+自然进店(Wool+Walkin)共享同一参数] ---
         elif version == "y_pure_v10_mix_wool_walkin_same_alpha":
-            alpha_grid = [0.1, 0.5, 1.0, 5.0, 10.0] # 🌟 精准修正共享步长范围
             space.update({
                 "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
                 "c_fusion_mode": tune.grid_search(["res_moe"]),
                 "loss_types": tune.grid_search([["prior_conflict"]]),
                 "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
                 "conflict_mode": tune.grid_search(["wool_walkin"]), 
-                "conflict_alpha_wool": tune.grid_search(alpha_grid),   
-                "conflict_alpha_walkin": tune.grid_search(alpha_grid), 
+                # 🌟 核心联动：wool 主控 5 档
+                "conflict_alpha_wool": tune.grid_search([ 1.0, 5.0, 10.0]),  #  0.1, 0.5,
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]), 
+            })
+
+        # --- [实验 7/7: 🌟 新增特定双向组合 B - 自然进店+隐藏金子(Walkin+Gold)共享同一参数] ---
+        elif version == "y_pure_v10_mix_walkin_gold_same_alpha":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "head_hidden_dims": tune.grid_search([None]),           # 🌟 默认 None 走 naked linear 头
+                "conflict_mode": tune.grid_search(["walkin_gold"]), 
+                # 🌟 核心联动：由 walkin 充当主变阻器 5 档
+                "conflict_alpha_walkin": tune.grid_search([1.0, 5.0, 10.0]),   # 0.1, 0.5, 
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_walkin"]), 
             })
         elif version == "y_pure_v10_debug_arena":
             space.update({
@@ -292,6 +324,190 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "conflict_two_stage_mode": tune.grid_search([False, True]),          # 测两阶段训练流
                 "conflict_stage1_epochs": tune.grid_search([5]),
                 "conflict_freeze_base_in_stage2": tune.grid_search([True])
+            })
+        elif version == "y_ours_s4_conflict_0710":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([None]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3]),
+                
+                "conflict_alpha_wool": tune.grid_search([1.0, 5, 0.5]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                
+
+            })
+
+        elif version == "y_ours_s4_conflict_0710_alpha0":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([[32], [64, 32], [32,16], None, [16]]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                
+                "conflict_alpha_wool": tune.grid_search([0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s4_conflict_0710_search_alpha_res_2_search_head":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([ [64, 32] ]), #  , [64, 32[32,16], [16], [32]]
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                
+                "conflict_alpha_wool": tune.grid_search([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s6_conflict_0710_alpha_search_temp10":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([None]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                "ours_s6_temp": tune.grid_search([10]), 
+                
+                "conflict_alpha_wool": tune.grid_search([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s6_conflict_0710_alpha_search_temp1_20":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([[32],[32,16],[64,32]]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                "ours_s6_temp": tune.grid_search([1,20]), 
+                
+                "conflict_alpha_wool": tune.grid_search([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s6_conflict_0710_alpha0_temp10":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([[32], [64, 32], [32,16], None, [16]]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                "ours_s6_temp": tune.grid_search([10]), 
+                
+                "conflict_alpha_wool": tune.grid_search([0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s6_conflict_0710_alpha0_temp20":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([[32], [64, 32], [32,16], None, [16]]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                "ours_s6_temp": tune.grid_search([20]), 
+                
+                "conflict_alpha_wool": tune.grid_search([0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s6_conflict_0710_alpha0_temp1":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([[32], [64, 32], [32,16], None, [16]]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+                "ours_s6_temp": tune.grid_search([1]), 
+                
+                "conflict_alpha_wool": tune.grid_search([0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })    
+        elif version == "y_v8_s6_temp_10_20_v10_all_mix_original_code_search_head_wd_alpha_same":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), 
+            "head_hidden_dims": tune.grid_search([[32], None]), 
+            "v8_scheme": tune.grid_search([6]),
+                           "align_temp": tune.grid_search([10,20]),
+                           "weight_decay": tune.grid_search([1e-4]), # , 1e-4
+                           "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([1, 0.5, 5, 10 , 0.1, 0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                         "loss_types": tune.grid_search([["prior_conflict"]])})
+        elif version == "y_v8_s4_v10_all_mix_original_code_search_head_wd_alpha_same":
+            space.update({"c_fusion_mode": tune.grid_search(["v8_evolution_moe"]), 
+            "head_hidden_dims": tune.grid_search([[32], None]), 
+            "v8_scheme": tune.grid_search([6]),
+                           "weight_decay": tune.grid_search([1e-4]), # , 1e-4
+                           "conflict_mode": tune.grid_search(["all"]), 
+                "conflict_alpha_wool": tune.grid_search([1, 0.5, 5, 10 , 0.1, 0]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                         "loss_types": tune.grid_search([["prior_conflict"]])})
+
+        elif version == "y_ours_s4_conflict_0710_1e-2":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([None]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-2]),
+                
+                "conflict_alpha_wool": tune.grid_search([1.0, 5, 0.5]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+
             })
 
         # ==========================================================

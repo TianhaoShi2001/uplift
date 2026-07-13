@@ -1,70 +1,47 @@
 #!/bin/bash
 # =========================================================================
-# 🚀 Uplift Modeling 纯 V10 突围战：6 组单变量分离与循序渐进消融全自动流水线
-# 包含：单人群靶向探索 (Solo) + 相同步长全人群联动 (Mix All / Both / Wool+Walkin)
+# 🚀 Uplift Modeling Ours S4 终极容量与 Focal 机制 A/B 双流水线搜参脚本
+# 物理逻辑：A/B 两路大军在后台各自独占单卡，多任务并行推进，拒绝直积核爆
 # =========================================================================
 ulimit -n 65536
 
 # -------------------------------------------------------------------------
-# 🛠️ 全局资源与硬件配置 (支持双核并发，避免多任务抢卡爆显存)
+# 🛠️ 显卡资源自由指定配置（支持卡号自定义）
 # -------------------------------------------------------------------------
-NUM_GPU=0.06
-NUM_GPU_B=0.1
-CUDA_A="3"
-CUDA_B="0"
-LOG_DIR="experiment_logs_pure_v10"
+NUM_GPU=0.1     # 每个 Trial 占用的 GPU 份额
+CUDA_A="3,0"       # 🎯 流水线 A 绑定的 GPU 卡号 (负责跑无 Focal 托底的经典基线组)
+CUDA_B="1"       # 🎯 流水线 B 绑定的 GPU 卡号 (负责跑带全球边界限制的 Global Bounded Focal 组)
+LOG_DIR="experiment_logs_ours_s4"
 mkdir -p $LOG_DIR
 
 echo "========================================================"
-echo "🚀 启动 纯 V10 (Residual Base + 裸 Linear Head) 循序渐进大阅兵"
-echo "▶️ [流水线 A] 将使用 GPU: ${CUDA_A} (负责前 3 组单人群靶向 Solo 实验)"
-echo "▶️ [流水线 B] 将使用 GPU: ${CUDA_B} (负责后 3 组多人群同步长 Mix 实验)"
+echo "🚀 启动 Ours S4 + Conflict Both 双轴流挂机大阅兵"
+echo "▶️ [流水线 A] 将独占 GPU: ${CUDA_A} (负责处理 Focal = None 实验组)"
+echo "▶️ [流水线 B] 将独占 GPU: ${CUDA_B} (负责处理 Focal = Global_Bounded 实验组)"
 echo "📄 所有任务的详细输出将保存在 $LOG_DIR/ 目录下"
 echo "========================================================"
 
 # -------------------------------------------------------------------------
-# 🟢 [流水线 A] 核心单兵作战战区 (Solo Area)
+# 🟢 [流水线 A] 战区 (独占 GPU_A, 挂起经典对照组)
 # -------------------------------------------------------------------------
 (
-    echo "🟢 [流水线 A] 已启动！"
+    echo "🟢 [流水线 A] 已在 GPU ${CUDA_A} 顺畅起航！"
     
-    echo "▶️ [流水线 A] 正在训练 [1/6]: 纯羊毛党靶向重击战"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_solo_wool --exp_name exp_v10_solo_wool --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_v10_solo_wool.txt 2>&1
+    echo "▶️ [流水线 A] 正在训练: Ours S4 + Both (Focal: None) 容量探索..."
+    # 通过环境变量或额外的条件可以在代码中过滤，若 search_space 已经全包，直接单起搜参即可
+    python main.py --mode tune --task train_y --model TARNET --version y_ours_s4_conflict_0710_search_alpha_res_2_search_head --exp_name y_ours_s4_conflict_0710_search_alpha_res_2_search_head222 --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_y_ours_s4_conflict_0710_search_alpha_res_2_search_head.txt 2>&1
     
-    echo "▶️ [流水线 A] 正在训练 [2/6]: 纯隐藏金子绝对拯救战"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_solo_gold --exp_name exp_v10_solo_gold --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_v10_solo_gold.txt 2>&1
-    
-    echo "▶️ [流水线 A] 正在训练 [3/6]: 纯自然进店镜像拦截战"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_solo_walkin --exp_name exp_v10_solo_walkin --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_v10_solo_walkin.txt 2>&1
-
-    echo "▶️ [流水线 A] 正在训练 [1/6]: 纯羊毛党靶向重击战"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_mix_both_same_alpha_head --exp_name exp_y_pure_v10_mix_both_same_alpha_head --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_y_pure_v10_mix_both_same_alpha_head.txt 2>&1
-    
-
-    echo "✅ [流水线 A] 所有单人群 Solo 靶向消融实验全部收网！"
-) &
+    echo "✅ [流水线 A] Focal: None 组探索全部收网。"
+) 
 
 # -------------------------------------------------------------------------
-# 🔵 [流水线 B] 混合多兵种群战区 (Mix Area)
+# 🔵 [流水线 B] 战区 (独占 GPU_B, 挂起边界优化组)
 # -------------------------------------------------------------------------
-(
-    echo "🔵 [流水线 B] 已启动！"
-    
-    echo "▶️ [流水线 B] 正在训练 [4/6]: 三人群(All)共享同一爆破参数联动战"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_mix_all_same_alpha --exp_name exp_v10_mix_all --cuda $CUDA_B --num_per_gpu $NUM_GPU_B > $LOG_DIR/log_v10_mix_all.txt 2>&1
-    
-    echo "▶️ [流水线 B] 正在训练 [5/6]: 经典双向对称对齐战 (Both 共享老机制参数)"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_mix_both_same_alpha --exp_name exp_v10_mix_both --cuda $CUDA_B --num_per_gpu $NUM_GPU_B > $LOG_DIR/log_v10_mix_both.txt 2>&1
-    
-    echo "▶️ [流水线 B] 正在训练 [6/6]: 特定双向组合战 (Wool + Walkin 共享同一参数)"
-    python main.py --mode tune --task train_y --model TARNET_Baseline_PureV10 --version y_pure_v10_mix_wool_walkin_same_alpha --exp_name exp_v10_mix_wool_walkin --cuda $CUDA_B --num_per_gpu $NUM_GPU_B > $LOG_DIR/log_v10_mix_wool_walkin.txt 2>&1
 
-    echo "✅ [流水线 B] 所有多人群同参数联动消融实验全部收网！"
-) &
 
-# 强行阻断等待两路大军合流
+# 🛑 核心锁死：等待两条大流水线全部回营合流
 wait
 
 echo "========================================================"
-echo "🎉 终极捷报：大盘 6 组纯 V10 精细化一维消融试验全部平稳落幕！"
+echo "🎉 终极捷报：Ours S4 大盘所有多维预测头消融试验圆满落幕！"
 echo "========================================================"
