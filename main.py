@@ -59,11 +59,11 @@ def set_all_seeds(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed) # 针对多卡环境
-    
+    torch.backends.cudnn.benchmark = True
     # 3. 确定性算法锁定 (牺牲极小性能换取 100% 复现)
     # 强制 CUDNN 使用确定的卷积算法
-    torch.backends.cudnn.deterministic = True 
-    torch.backends.cudnn.benchmark = False
+    # torch.backends.cudnn.deterministic = True 
+    # torch.backends.cudnn.benchmark = False
     
     # 针对新版本 Torch 的严苛模式（可选，如果某些算子不支持会报错）
     # torch.use_deterministic_algorithms(True, warn_only=True)
@@ -296,39 +296,44 @@ def main():
 # =========================================================================
     # 👑 物理突围防线：免 Ray 纯 Python 参数化全局动态调度器通道 (single_grid)
     # =========================================================================
+# =========================================================================
+    # 👑 免 Ray 纯 Python 参数化全局动态调度器通道 (single_grid)
+    # =========================================================================
     elif args.mode == "single_grid":
         from custom_grid_space import ALL_CUSTOM_SPACES
-        # 🌟 核心修正：顺应你原生 trainer.py 的导出习惯，直接导入大盘原汁原味的 Trainer 类或核心函数
-        # 根据你原有的 main.py，如果是从 trainer 导入 Trainer 类，就用下面这行：
-        from trainer import Trainer  
+        # 🌟 修复点 1：导入真正的底层核心训练函数 train_trial
+        # from trainer import train_trial  
         
-        # 1. 拦截检查该特定版本配置是否存在
         if args.version not in ALL_CUSTOM_SPACES:
-            raise ValueError(f"❌ [免Ray空间] 找不到你指定的空间版本名字: {args.version}")
+            raise ValueError(f"❌ [免Ray空间] 找不到指定的空间版本名字: {args.version}")
             
-        # 2. 强行拉出对应的纯净参数配置，不跟 Ray 产生半毛钱直积
         current_config = ALL_CUSTOM_SPACES[args.version]
         
         print("=" * 80)
         print(f"🚀 [NO-RAY ENGINE] 顺利切入免Ray强训通道！随机种子已被锁死为: {args.seed}")
         print(f"📂 实验保存文件夹: {args.exp_name}")
-        print(f"⚙️  全通道灌入配置明细: {current_config}")
+        print(f"⚙️  全通道底座融合参数明细: {current_config}")
         print("=" * 80)
         
-        # 3. 实时同步覆盖掉框架内 args 中的全局默认参数，完成超参侵入
-        for k, v in current_config.items():
-            if hasattr(args, k):
-                setattr(args, k, v)
+        # 🌟 修复点 2：将基础底座 (包含 data_spec 和系统级环境) 与自定义超参合并成一个大字典
+        trial_cfg = {**base_cfg, **current_config}
+        
+        # 强行注入核心环境标识
+        trial_cfg["seed"] = args.seed
+        
+        # 🌟 绝杀伪装：告诉 trainer.py 当前是 "reproduce" 模式
+        # 这样它就会完全绕开 Ray 的汇报机制（彻底不报 Ray 相关的 Warning），并在你的 log 文本里打印出最完美的训练指标！
+        trial_cfg["mode"] = "reproduce" 
+        
+        # 为了配合 trainer.py 里 reproduce 模式会自动追加 "/seed_xxx" 的物理特性，
+        # 我们把 run_hierarchy 尾部重复的 "_seed_xxx" 斩掉，避免路径变成双重 seed
+        if f"_seed_{args.seed}" in trial_cfg["run_hierarchy"]:
+            trial_cfg["run_hierarchy"] = trial_cfg["run_hierarchy"].replace(f"_seed_{args.seed}", "")
                 
-        # 4. 🌟 核心修正：用你最原始、真刀真枪跑通的 Trainer 初始化方式去唤醒训练！
-        # 如果你底层的构造函数习惯直接收 args，这样写：
-        trainer = Trainer(args)
-        trainer.train()
+        # 🌟 修复点 3：顺应大盘真正的拉起方式，启动！
+        train_trial(trial_cfg)
         
-        # 💡 注：如果你原本的 main.py 里有特殊的传入参数（比如 trainer = Trainer(config, device)）
-        # 请在这里保持和你原生 main.py 第 50-100 行附近的实例化代码完全像素级一致即可！
-        
-        print(f"✅ [NO-RAY ENGINE] 专属版本 {args.version} | 种子 {args.seed} 顺利通过，新日志已刷出！")
+        print(f"✅ [NO-RAY ENGINE] 专属版本 {args.version} | 种子 {args.seed} 完美出关！")
 
     # 运行结束后清理临时目录 (保持服务器整洁)
     if args.mode in ["debug", "tune"]:

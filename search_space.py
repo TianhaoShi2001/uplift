@@ -59,7 +59,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
     space = {
         "learning_rate": tune.grid_search([1e-3]),
         "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]), # , 1e-3
-        "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+        "hidden_dims": tune.grid_search([[128, 64, 32], [64,32], [64]]), 
         "dropout_rate": tune.grid_search([0.0]),
         "batch_size": tune.grid_search([65536*4]),
         "accumulate_steps": tune.grid_search([4]),
@@ -273,7 +273,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 # 4 档 head 拓扑 × 2 档 alpha = 严格控制在 8 组试验！
                 "head_hidden_dims": tune.grid_search([[32], [64, 32], [32,16], None, [16]]),  
                 "weight_decay": tune.grid_search([1e-5, 1e-4,]), # , 1e-3
-                "conflict_mode": tune.grid_search(["ALL"]), 
+                "conflict_mode": tune.grid_search(["all"]), 
                 # 🌟 核心联动：同步 2 档 alpha 变化
                 "conflict_alpha_wool": tune.grid_search([1.0, 5, 0.5]),   
                 "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
@@ -521,6 +521,68 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "conflict_mode": tune.grid_search(["both"]),
                 # 👇 下面这些留给你要做 debug 或分离时一键启动，目前都是 tune.grid_search([默认]) 绝不破坏老版本执行结果
                 "head_hidden_dims": tune.grid_search([[32]]) # Ours 架构默认同步开起 Head 公平对齐
+            })
+        elif version == "y_ours_s4_conflict_0717_h_None_search_alpha":
+            space.update({
+                "c_fusion_mode": tune.grid_search(["ours_s4_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "conflict_alpha_wool": tune.grid_search([ 1, 5, 10, 0.1, 0.5]),  # ([1, 0.5, 5, 10 , 0.1]), 0.5, 5,   0.05, 0, 0.01,
+                "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "weight_decay": tune.grid_search([1e-5, 1e-4,]), # 1e-3, 1e-2
+                "conflict_mode": tune.grid_search(["all"]),
+                # 👇 下面这些留给你要做 debug 或分离时一键启动，目前都是 tune.grid_search([默认]) 绝不破坏老版本执行结果
+                "head_hidden_dims": tune.grid_search([None]) # Ours 架构默认同步开起 Head 公平对齐
+            })
+        elif version == "y_ours_s6_conflict_0717_hNone_search_alpha":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([None]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-3,1e-2,1e-4,1e-5]),
+                "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+                "ours_s6_temp": tune.grid_search([1]), 
+                
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10, 0.1, 0.5]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_pure_v10_0717_h_None_search_alpha":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                # 4 档 head 拓扑 × 2 档 alpha = 严格控制在 8 组试验！
+                "head_hidden_dims": tune.grid_search([None]),  
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]), # , 1e-3
+                "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+                "conflict_mode": tune.grid_search(["all"]), 
+                # 🌟 核心联动：同步 2 档 alpha 变化
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10, 0.1, 0.5]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_pure_v10_0713_h32_search_search_alpha_independt":
+            space.update({
+                "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
+                "c_fusion_mode": tune.grid_search(["res_moe"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                # 4 档 head 拓扑 × 2 档 alpha = 严格控制在 8 组试验！
+                "head_hidden_dims": tune.grid_search([None]),  
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]), # , 1e-3
+                "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+                "conflict_mode": tune.grid_search(["all"]), 
+                # 🌟 核心联动：同步 2 档 alpha 变化
+                "conflict_alpha_wool": tune.grid_search([1, 0.5, 5  , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.grid_search([1, 0.5, 5 , 0.1]),
+                "conflict_alpha_walkin": tune.grid_search([1, 0.5, 5 , 0.1]),
             })
             
         # 🟢 在所有 S6 的独立温度分支中，同步塞入加深 Head、Logit裁剪等全新可调空间入口

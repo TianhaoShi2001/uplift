@@ -31,10 +31,11 @@ def set_all_seeds(seed):
     torch.cuda.manual_seed(seed)
     torch.cuda.manual_seed_all(seed) # 针对多卡环境
     
+    torch.backends.cudnn.benchmark = True
     # 3. 确定性算法锁定 (牺牲极小性能换取 100% 复现)
     # 强制 CUDNN 使用确定的卷积算法
-    torch.backends.cudnn.deterministic = True 
-    torch.backends.cudnn.benchmark = False
+    # torch.backends.cudnn.deterministic = True 
+    # torch.backends.cudnn.benchmark = False
     
     # 针对新版本 Torch 的严苛模式（可选，如果某些算子不支持会报错）
     # torch.use_deterministic_algorithms(True, warn_only=True)
@@ -445,7 +446,10 @@ def run_final_evaluation(model, loaders_dict, device, config):
     for split_name, loader in loaders_dict.items():
         if loader is None: continue
             
-        csv_path = os.path.join(res_dir, f"{split_name}_dist.csv")
+        if split_name in ['train', 'valid']:
+            csv_path = None
+        else:
+            csv_path = os.path.join(res_dir, f"{split_name}_dist.csv")
         metrics, _ = evaluate_and_dump(model, loader, device, config["task"], save_path=csv_path, max_steps=eval_max_steps, show_pbar=True)
         
         for k, v in metrics.items():
@@ -545,10 +549,48 @@ def train_trial(trial_cfg):
         return
 
     num_workers = trial_cfg.get("num_workers", 0)
+    def seed_worker(worker_id):
+        worker_seed = torch.initial_seed() % 2**32
+        np.random.seed(worker_seed)
+        import random
+        random.seed(worker_seed)
+        
+    g = torch.Generator()
+    g.manual_seed(seed)
     try:
-        train_loader = DataLoader(UpliftDataset(trial_cfg, split="train"), batch_size=trial_cfg["batch_size"], shuffle=True, collate_fn=uplift_collate_fn, pin_memory=True, num_workers=num_workers)
-        valid_loader = DataLoader(UpliftDataset(trial_cfg, split="valid"), batch_size=trial_cfg["batch_size"], shuffle=False, collate_fn=uplift_collate_fn, pin_memory=True, num_workers=num_workers)
-        test_loader = DataLoader(UpliftDataset(trial_cfg, split="test"), batch_size=trial_cfg["batch_size"], shuffle=False, collate_fn=uplift_collate_fn, pin_memory=True, num_workers=num_workers)
+        train_loader = DataLoader(
+            UpliftDataset(trial_cfg, split="train"), 
+            batch_size=trial_cfg["batch_size"], 
+            shuffle=True, 
+            collate_fn=uplift_collate_fn, 
+            pin_memory=True, 
+            num_workers=num_workers,
+            worker_init_fn=seed_worker,  # 👉 注入防克隆机制
+            generator=g                  # 👉 接管 PyTorch 洗牌发生器
+        )
+        valid_loader = DataLoader(
+            UpliftDataset(trial_cfg, split="valid"), 
+            batch_size=trial_cfg["batch_size"], 
+            shuffle=False, 
+            collate_fn=uplift_collate_fn, 
+            pin_memory=True, 
+            num_workers=num_workers,
+            worker_init_fn=seed_worker,
+            generator=g
+        )
+        test_loader = DataLoader(
+            UpliftDataset(trial_cfg, split="test"), 
+            batch_size=trial_cfg["batch_size"], 
+            shuffle=False, 
+            collate_fn=uplift_collate_fn, 
+            pin_memory=True, 
+            num_workers=num_workers,
+            worker_init_fn=seed_worker,
+            generator=g
+        )
+        # train_loader = DataLoader(UpliftDataset(trial_cfg, split="train"), batch_size=trial_cfg["batch_size"], shuffle=True, collate_fn=uplift_collate_fn, pin_memory=True, num_workers=num_workers)
+        # valid_loader = DataLoader(UpliftDataset(trial_cfg, split="valid"), batch_size=trial_cfg["batch_size"], shuffle=False, collate_fn=uplift_collate_fn, pin_memory=True, num_workers=num_workers)
+        # test_loader = DataLoader(UpliftDataset(trial_cfg, split="test"), batch_size=trial_cfg["batch_size"], shuffle=False, collate_fn=uplift_collate_fn, pin_memory=True, num_workers=num_workers)
     except Exception as e:
         print(f"⚠️ 数据集加载出错: {e}")
         return

@@ -6,7 +6,7 @@ ulimit -n 65536
 LOG_DIR="no_ray_tune_matrix_logs"
 mkdir -p $LOG_DIR
 
-SEEDS=(1042 2042 3042)
+SEEDS=(42 1042)
 
 TASKS_PURE_V10=(
     "y_pure_v10_h32_a1.0_wd1e4"
@@ -53,7 +53,7 @@ run_no_ray_dispatcher() {
                 --version "$VERSION_NAME" \
                 --exp_name "$EXP_NAME" \
                 --seed "$SEED" \
-                --cuda "$GPU_ID" # > "$LOG_DIR/log_${EXP_NAME}.txt" 2>&1 &
+                --cuda "$GPU_ID" > "$LOG_DIR/log_${EXP_NAME}.txt" 2>&1 &
                 
             # 🌟 这里的 jobs 统计现在被小括号限制在当前显卡独立沙盒内，精准不越界！
             echo "🚀 [GPU $GPU_ID] 挂载新进程: ${EXP_NAME} | 卡槽占用: $(jobs -pr | wc -l)/${MAX_CONCURRENCY}"
@@ -70,16 +70,17 @@ run_no_ray_dispatcher() {
 # -------------------------------------------------------------------------
 # 🚀 物理集群异构分配大阅兵 (🌟 核心加固：加 () 形成物理隔离的子进程环境)
 # -------------------------------------------------------------------------
-( run_no_ray_dispatcher "2" 1 "${TASKS_PURE_V10[@]}" )  # &
+( run_no_ray_dispatcher "2" 1 "${TASKS_PURE_V10[@]}" )  &
 
-# ( run_no_ray_dispatcher "4" 1 "${TASKS_OURS_S6[@]}" ) &
-# ( run_no_ray_dispatcher "5" 1 "${TASKS_OURS_S6[@]}" ) &
-# ( run_no_ray_dispatcher "6" 1 "${TASKS_OURS_S6[@]}" ) &
+( run_no_ray_dispatcher "4" 1 "${TASKS_OURS_S6[@]}" ) &
+( run_no_ray_dispatcher "5" 1 "${TASKS_OURS_S6[@]}" ) &
+( run_no_ray_dispatcher "6" 1 "${TASKS_OURS_S6[@]}" ) &
 
-# ( run_no_ray_dispatcher "7" 2 "${TASKS_PURE_V10[@]}" ) &
+( run_no_ray_dispatcher "7" 2 "${TASKS_PURE_V10[@]}" ) &
 
-# ( run_no_ray_dispatcher "0" 3 "${TASKS_OURS_S6[@]}" ) &
-# ( run_no_ray_dispatcher "3" 3 "${TASKS_PURE_V10[@]}" ) &
+( run_no_ray_dispatcher "3" 15 "${TASKS_PURE_V10[@]}" ) &
+( run_no_ray_dispatcher "0" 12 "${TASKS_OURS_S6[@]}" ) &
+
 
 wait
 echo "========================================================"
