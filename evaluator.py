@@ -147,7 +147,24 @@ def evaluate_and_dump(model, loader, device, task_name, save_path=None, max_step
             pi_dict = out.get("pi_dict", {}) if isinstance(out, dict) else (out[2] if len(out) > 2 else {})
             
             # 2. 扁平化分发主、副任务预测
-            if isinstance(out, dict) and "c_logits" in out:
+            if isinstance(out, dict) and out.get("ecup_0717new"):
+                # ECUP_0717new 分支：只在这里 sigmoid 一次，得到真正的 pCTR * pCVR，
+                # 避免重蹈原版 ECUP 分支 "预乘概率又被下面通用收尾再 sigmoid 一次" 的覆辙
+                # （那个 bug 会把 out_0 压到 [0.5, 0.73] 区间）。
+                c0_logit, c1_logit = out["c_logits"]
+                cvr0_logit, cvr1_logit = out["cvr_logits"]
+                
+                c_out_0 = torch.sigmoid(c0_logit)
+                c_out_1 = torch.sigmoid(c1_logit)
+                
+                out_0 = c_out_0 * torch.sigmoid(cvr0_logit)
+                out_1 = c_out_1 * torch.sigmoid(cvr1_logit)
+                
+                c0_prob_all.append(c_out_0.cpu().numpy())
+                c1_prob_all.append(c_out_1.cpu().numpy())
+                already_prob = True
+
+            elif isinstance(out, dict) and "c_logits" in out:
                 # 🌿 ECUP 分支
                 c0_logit, c1_logit = out["c_logits"]
                 c_out_0, c_out_1 = torch.sigmoid(c0_logit), torch.sigmoid(c1_logit)

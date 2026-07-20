@@ -59,7 +59,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
     space = {
         "learning_rate": tune.grid_search([1e-3]),
         "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]), # , 1e-3
-        "hidden_dims": tune.grid_search([[128, 64, 32], [64,32], [64]]), 
+        "hidden_dims": tune.grid_search([[128, 64, 32]]), 
         "dropout_rate": tune.grid_search([0.0]),
         "batch_size": tune.grid_search([65536*4]),
         "accumulate_steps": tune.grid_search([4]),
@@ -530,7 +530,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "hidden_dims": tune.grid_search([[128, 64, 32]]), 
                 "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
                 "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
-                "weight_decay": tune.grid_search([1e-5, 1e-4,]), # 1e-3, 1e-2
+                "weight_decay": tune.grid_search([1e-3, 1e-2]), # 1e-3, 1e-2
                 "conflict_mode": tune.grid_search(["all"]),
                 # 👇 下面这些留给你要做 debug 或分离时一键启动，目前都是 tune.grid_search([默认]) 绝不破坏老版本执行结果
                 "head_hidden_dims": tune.grid_search([None]) # Ours 架构默认同步开起 Head 公平对齐
@@ -547,10 +547,29 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 # 三向人群错位激活模式：羊毛+金子经典双向对齐
                 "conflict_mode": tune.grid_search(["all"]), 
                 "weight_decay": tune.grid_search([1e-3,1e-2,1e-4,1e-5]),
-                "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+                "hidden_dims": tune.grid_search([[64,32],[64],[32],[16],[32,16]]), 
                 "ours_s6_temp": tune.grid_search([1]), 
                 
                 "conflict_alpha_wool": tune.grid_search([1, 5, 10, 0.1, 0.5]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+            })
+        elif version == "y_ours_s6_conflict_0717_hNone_search_alpha_temp":
+            space.update({
+                "model": tune.grid_search(["TARNET"]), 
+                "c_fusion_mode": tune.grid_search(["ours_s6_conflict"]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                
+                # 预测头容量消融：覆盖 4 档典型非线性漏斗拓扑
+                "head_hidden_dims": tune.grid_search([None]), 
+                
+                # 三向人群错位激活模式：羊毛+金子经典双向对齐
+                "conflict_mode": tune.grid_search(["all"]), 
+                "weight_decay": tune.grid_search([1e-3,1e-2,1e-4,1e-5]),
+                "hidden_dims": tune.grid_search([[128, 64, 32]]), 
+                "ours_s6_temp": tune.grid_search([0.1,5,10,20]), 
+                
+                "conflict_alpha_wool": tune.grid_search([1, 10, 0.1]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
                 "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
                 "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
             })
@@ -1284,6 +1303,44 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "alpha_sda": tune.grid_search([0.1, 0.5, 1.0, 5.0]), 
                 "aux_weight": tune.grid_search([0.1, 0.5, 1.0])
             })
+        elif version == "y_efin_0717new":
+            space.update({
+                "model": tune.grid_search(["EFIN_0717new"]),
+                "efin_hu_dim": tune.grid_search([128,64,32]),
+                "efin_hc_dim": tune.sample_from(lambda spec: spec.config["efin_hu_dim"]),  
+                # "efin_hc_dim": tune.grid_search([128,64,32]),
+                "batch_size": tune.grid_search([66536]),
+                "efin_is_self": tune.grid_search([False]),
+                "efin_dropout": tune.grid_search([0.0]),
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+            })
+            
+        elif version == "y_ecup_0717new":
+            space.update({
+                "model": tune.grid_search(["ECUP_0717new"]),
+                "loss_types": tune.grid_search([["bce"]]),
+                "learning_rate": tune.grid_search([1e-3]),
+                "d_dim": tune.grid_search([32]), # 16 8 32
+                "tower_h": tune.grid_search([128]), # 128 64 32
+                "tae_h": tune.grid_search([128]),
+                "num_heads": tune.grid_search([2]), # 1 2 4
+                "batch_size": tune.grid_search([66536]),
+                "gamma": tune.grid_search([1.0]),
+                "ctcvr_weight": tune.grid_search([0.1, 0.5, 1.0, 2,  10]),
+                "weight_decay": tune.grid_search([1e-5, 1e-4, 1e-3, 1e-2]),
+            })
+            
+        elif version == "y_mtmt_0717new":
+            space.update({
+                "model": tune.grid_search(["MTMT_0717new"]),
+                "loss_types": tune.grid_search([["bce"]]),
+                "expert_type": tune.grid_search(["mlp", "resnet18"]),
+                "expert_hidden_dims": tune.grid_search([[64, 32],[128,64,32],[32]]),  # resnet18 只取 [0]=64 当输出维
+                "num_experts": tune.grid_search([4]), # 2 4 8
+                "t_emb_dim": tune.grid_search([16]), # 16 8 32
+                "dropout_rate": tune.grid_search([0]),
+                "aux_weight": tune.grid_search([0.01, 0.1, 1.0, 10]),
+            })
 
         # 🟢 版本 4：TARNET Naive Multitask (主任务 Y + 辅任务 C 联合优化)
         elif version == "y_v1_naive_mt_small_c_weight":
@@ -1446,6 +1503,90 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "conflict_alpha_wool": tune.grid_search([10.0]), "conflict_alpha_gold": tune.grid_search([10.0]), "conflict_alpha_walkin": tune.grid_search([10.0]), 
                 "ours_s6_temp": tune.grid_search([1.0]), "weight_decay": tune.grid_search([0.01]),
             })
+        elif version == "y_baseline_canniuplift_ms":
+    # 默认单点配置 —— 先验证跑通（forward/backward/loss 下降），再跑下面几个网格。
+            space.update({
+                "model": tune.grid_search(["CanniUplift"]),
+                "canniuplift_use_treat_attn": tune.grid_search([True]),
+                "canniuplift_attn_d_dim": tune.grid_search([16]),
+                "canniuplift_attn_num_heads": tune.grid_search([2]),
+                "canniuplift_seller_w": tune.grid_search([1.0]),
+                "canniuplift_rdd_w": tune.grid_search([1.0]),
+                "canniuplift_redem_w": tune.grid_search([1.0]),
+                "canniuplift_iptw_w": tune.grid_search([1.0]),
+            })
+        elif version == "y_baseline_canniuplift_paper_grid":
+            # ------------------------------------------
+            # 🌟 严格对齐论文 §4.3 Experimental Setup 公开的搜索空间：
+            #   "The search space includes learning rate η ∈ {5e-4, 1e-4, 5e-5}
+            #    and hidden dimension dh ∈ {128, 256, 512}."
+            # 论文用 Optuna 40 trials/自动调参；本仓是穷举 grid，故这里老实穷举 3×3=9 点。
+            # 论文只给了单个 dh（塔第一层宽度），这里按论文语义把塔统一设成 [dh, dh//2]
+            # 两层（第二层减半，贴近论文 "hidden dimension" 单旋钮、而不是我们自己那套
+            # 四档 cap_grid 的多层写法）。batch_size/L2 论文写死 4096 / 1e-4，不在这个
+            # version 里穷举（避免和 _baseline_fixed_common 的批大小口径打架，见下方注释）。
+            # ------------------------------------------
+            space.update({
+                "model": tune.grid_search(["CanniUplift"]),
+                "learning_rate": tune.grid_search([1e-3]),      # 论文 η
+                "hidden_dims": tune.grid_search([[256, 128], [128, 64],  [128,64,32],[64,32],[64]]),  # 论文 dh
+                "weight_decay": tune.grid_search([1e-4,1e-5,1e-3,1e-2]),                   # 论文 L2 λ=1e-4
+                "canniuplift_use_treat_attn": tune.grid_search([True]),
+                "canniuplift_attn_d_dim": tune.grid_search([16]),
+                "canniuplift_attn_num_heads": tune.grid_search([2]),
+                "canniuplift_seller_w": tune.grid_search([1.0]),
+                "canniuplift_rdd_w": tune.grid_search([1.0,0.5,2]),
+                # "canniuplift_redem_w": tune.grid_search([1.0]),
+                "canniuplift_iptw_w": tune.grid_search([1.0]),
+                "canniuplift_redem_w": tune.sample_from(lambda spec: spec.config["canniuplift_rdd_w"]),
+            })
+        elif version == "y_baseline_canniuplift_cap_grid":
+            # 容量四档扫（同 rankzoo air_zhongjie_pytorch/search_space.py 及 TF 版
+            # config/st_baseline_cap_units.py 的 l1c05/l2c05/l2c1/l3c1 四档口径），
+            # 其余超参固定默认值 —— 定位 Seller/RDD 塔宽度对 wAUUC 的影响。
+            # 注意：论文 §4.3 只搜了单层宽度 {128,256,512}（见上面 paper_grid 版）；
+            # 这四档「层数+宽度」组合是 rankzoo/本仓的自定义规模档位，论文未公开。
+            space.update({
+                "model": tune.grid_search(["CanniUplift"]),
+                "hidden_dims": tune.grid_search([[64], [64, 32], [128, 64], [128, 64, 32]]),
+                "canniuplift_use_treat_attn": tune.grid_search([True]),
+                "canniuplift_attn_d_dim": tune.grid_search([16]),
+                "canniuplift_attn_num_heads": tune.grid_search([2]),
+                "canniuplift_seller_w": tune.grid_search([1.0]),
+                "canniuplift_rdd_w": tune.grid_search([1.0]),
+                "canniuplift_redem_w": tune.grid_search([1.0]),
+                "canniuplift_iptw_w": tune.grid_search([1.0]),
+            })
+        elif version == "y_baseline_canniuplift_ablation":
+            # Treat-Attn 开关 ablation —— 定位 attn 收益是否来自字段交互本身。
+            # 提醒：这不是论文 Table 2 的模块消融（论文消融的是 PGA / RDD 是否启用，
+            # baseline=EUEN）。本仓没实现 PGA（无多 seller 候选集结构），所以做不了
+            # 论文那张表；这里消融的是我们自己为了适配表格数据而新增的「字段版
+            # Treat-Attention」，验证它本身是否比不用 attn（纯 encoder 拼接）更好。
+            # 若要贴近论文 Table 2 的叙事，应额外把本仓已有的 EUEN baseline 拉来同条件
+            # 对比（RDD 有/无 = CanniUplift vs EUEN），而不是只看 attn 开关。
+            space.update({
+                "model": tune.grid_search(["CanniUplift"]),
+                "canniuplift_use_treat_attn": tune.grid_search([True, False]),
+                "canniuplift_attn_d_dim": tune.grid_search([16]),
+                "canniuplift_attn_num_heads": tune.grid_search([2]),
+                "canniuplift_seller_w": tune.grid_search([1.0]),
+                "canniuplift_rdd_w": tune.grid_search([1.0]),
+                "canniuplift_redem_w": tune.grid_search([1.0]),
+                "canniuplift_iptw_w": tune.grid_search([1.0]),
+            })
+        elif version == "y_baseline_canniuplift_loss_weight_grid":
+            # L_rdd / L_redem 相对 L_seller 的权重扫（容量固定默认 [128,64]）。
+            # 论文 Eq.17 直接把三/两项 loss 系数设为 1（Ltotal = LGMV_Tw + Lredem，
+            # 未公开做过权重扫描），这里的 {0.5,1.0,2.0} 网格是本仓自定义补充，
+            # 不是论文数值。
+            space.update({
+                "model": tune.grid_search(["CanniUplift"]),
+                "canniuplift_use_treat_attn": tune.grid_search([True]),
+                "canniuplift_rdd_w": tune.grid_search([0.5, 1.0, 2.0]),
+                "canniuplift_redem_w": tune.grid_search([0.5, 1.0, 2.0]),
+            })
+
         else:
             space.update({
                 "c_fusion_mode": tune.grid_search(["none"]),

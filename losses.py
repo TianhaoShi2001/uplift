@@ -680,6 +680,32 @@ def compute_dragonnet_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config
     }
     
     return total_loss, loss_components
+
+def compute_efin_ours_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config):
+    """
+    EFIN 专属损失函数: 主任务 Loss + 组别反转约束 Loss
+    """
+    # 1. 主任务标准 BCE (只用观测到的 T 对应的预测值)
+    y_pred_obs = torch.where(treatment == 1, y1_pred, y0_pred)
+    loss_y = F.binary_cross_entropy_with_logits(y_pred_obs, targets.float())
+    
+    # 2. Intervention Constraint Loss (Paper Eq 14)
+    # 论文要求使用 inverse label (1 - T) 进行训练，以制造干扰，平衡特征分布
+    t_constraint_logit = pi_dict["efin_constraint_logit"]
+    inverse_treatment = 1.0 - treatment.float()
+    loss_c = F.binary_cross_entropy_with_logits(t_constraint_logit, inverse_treatment)
+    
+    # 3. 总 Loss 融合
+    lam = config.get("efin_lambda", 0.01) # 权重默认给个 0.01
+    total_loss = loss_y + lam * loss_c
+    
+    loss_components = {
+        "efin_loss_y": loss_y.item(), 
+        "efin_loss_c": (lam * loss_c).item()
+    }
+    
+    return total_loss, loss_components
+
 def compute_efin_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config):
     """
     EFIN 专属损失函数: 主任务 Loss + 组别反转约束 Loss
@@ -776,6 +802,145 @@ def compute_descn_loss(mu0_logit, mu1_logit, y, t, pi_dict, trial_cfg):
     
     return total_loss, loss_comp
 
+import torch
+import torch.nn.functional as F
+
+def compute_efin_0717new_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config):
+    """
+    EFIN_0717new 专属损失：1:1 仿照官方 KDD23_EFIN.calculate_loss。
+    
+    官方原文：
+    loss1 = mean(((1-t)c_logit + t(c_logit.detach()+u_tau) - y) ** 2)   # 平方误差，直接对 raw logit 回归
+    loss2 = BCEWithLogitsLoss(t_logit, 1 - t)                            # 干预平衡项，无权重
+    loss  = loss1 + loss2                                                # 两项等权相加，没有 lambda
+    """
+    y0_pred, y1_pred = y0_pred.float(), y1_pred.float()
+    y_true = targets.float()
+    t_true = treatment.float()
+    
+    y_pred_obs = (1.0 - t_true) * y0_pred + t_true * y1_pred
+    loss_y = torch.mean(torch.square(y_pred_obs - y_true))
+    
+    t_logit = pi_dict["efin_t_logit"]
+    loss_t = F.binary_cross_entropy_with_logits(t_logit, 1.0 - t_true)
+    
+    total_loss = loss_y + loss_t
+    loss_components = {
+        "efin_0717new_loss_y_mse": loss_y.item(),
+        "efin_0717new_loss_t_bce": loss_t.item(),
+    }
+    return total_loss, loss_components
+
+
+def compute_ecup_0717new_loss(preds_dict, y, c, t, config):
+    """
+    ECUP_0717new 全链路联合损失 (Entire Chain Loss)：兼容 AMP 的数值安全实现。
+    """
+    c0_logit, c1_logit = preds_dict["c_logits"]
+    cvr0_logit, cvr1_logit = preds_dict["cvr_logits"]
+    
+    # 转换为 float 类型以确保数值计算精度
+    y = y.float()
+    c = c.float()
+    
+    c_logit_obs = torch.where(t == 1, c1_logit, c0_logit)
+    cvr_logit_obs = torch.where(t == 1, cvr1_logit, cvr0_logit)
+    
+    # 1. CTR 部分的标准稳定 BCE
+    loss_c = F.binary_cross_entropy_with_logits(c_logit_obs, c, reduction='mean')
+    
+    # 2. CTCVR (y) 部分的数值安全计算 (p_y = p_c * p_cvr)
+    # 采用 log(p_y) = log_sigmoid(c_logit) + log_sigmoid(cvr_logit) 实现更安全的半精度/AMP 表现
+    log_p_c = F.logsigmoid(c_logit_obs)
+    log_p_cvr = F.logsigmoid(cvr_logit_obs)
+    log_p_y = log_p_c + log_p_cvr
+    
+    # 1 - p_y = 1 - p_c * p_cvr
+    p_c = torch.sigmoid(c_logit_obs)
+    p_cvr = torch.sigmoid(cvr_logit_obs)
+    p_y = p_c * p_cvr
+    log_one_minus_p_y = torch.log(torch.clamp(1.0 - p_y, min=1e-7, max=1.0))
+    
+    # 计算最终的 CTCVR BCE Loss
+    loss_y = -(y * log_p_y + (1.0 - y) * log_one_minus_p_y).mean()
+    
+    # 动态加权并融合
+    ctcvr_weight = config.get("ctcvr_weight", 1.0)
+    total_loss = loss_c + ctcvr_weight * loss_y
+    
+    loss_components = {
+        "ecup_0717new_ctr_loss": loss_c.item(),
+        "ecup_0717new_ctcvr_loss": loss_y.item(),
+    }
+    return total_loss, loss_components  
+
+def compute_canniuplift_loss(y0_pred, y1_pred, targets, treatment, mediator, pi_dict, config):
+    """CanniUplift 全量 loss —— 三项，逐项对齐
+    CANNIUPLIFT_PYTORCH_IMPLEMENTATION_SPEC.md §6（TF `loss_op`），把 rankzoo cnt 版本的
+    Tweedie 换成 BCE，因为本仓 `targets`=`conversion` 是二分类：
+      L_seller = mean( iptw_w*(w_t+w_c) * BCE(y, y_obs_seller) )
+                 [Seller-local 双塔 IPTW 加权 factual；w_t/w_c 是 batch 内逆倾向权重]
+      L_rdd    = mean( BCE(y, gmv_pred) )
+                 [gmv_pred = (1-t)*sigmoid(mu_c) + t*(p_r*sigmoid(delta_r)+(1-p_r)*sigmoid(delta_1mr))；
+                  control 支路用 mu_c，NOT y0 —— 与 seller 头分工不同，见 spec §5.4]
+      L_redem  = sum(t * BCE(mediator, p_r_logit)) / (sum(t)+eps)
+                 [mediator（本仓 `visit`，扮演论文核销标签 r）只在 T=1 样本监督，spec §6.3/§11]
+      L_total  = seller_w*L_seller + rdd_w*L_rdd + redem_w*L_redem
+    y0_pred/y1_pred: Seller-local 双塔 raw logit（CanniUplift.forward 的前两个返回值）。
+    mediator: 0/1 张量（本仓 train_trial 传入的 `c`，即 visit/核销标签)。
+    pi_dict: CanniUplift.forward 第三个返回值，含 canni_p_r_logit / canni_mu_c_logit /
+             canni_delta_r_logit / canni_delta_1mr_logit 四个头。
+    边界安全：t 全 0 时 p_t 被 clamp 到 >=1e-3，w_t 本身也是 0（不会 NaN）；
+             sum(t)=0 时 n_treat 有 +1e-8 保护，不会除零。
+    """
+    t = treatment.float()
+    y = targets.float()
+    r = mediator.float()
+    p_r_logit = pi_dict["canni_p_r_logit"]
+    mu_c_logit = pi_dict["canni_mu_c_logit"]
+    delta_r_logit = pi_dict["canni_delta_r_logit"]
+    delta_1mr_logit = pi_dict["canni_delta_1mr_logit"]
+    # --- L_seller: IPTW-weighted factual BCE (Seller-local 双塔) ---
+    y_obs_seller = torch.where(t > 0.5, y1_pred, y0_pred)
+    p_t = torch.clamp(t.mean(), min=1e-3)
+    p_c = torch.clamp(1.0 - t.mean(), min=1e-3)
+    iptw_w = config.get("canniuplift_iptw_w", 1.0)
+    w_t = t / (2.0 * p_t)
+    w_c = (1.0 - t) / (2.0 * p_c)
+    iptw = iptw_w * (w_t + w_c)
+    l_seller_per = F.binary_cross_entropy_with_logits(y_obs_seller, y, reduction="none")
+    loss_seller = (iptw * l_seller_per).mean()
+    # --- L_rdd: control 支路用 mu_c（单独一个头，不是 y0）；treated 支路走 RDD 分解合成 ---
+    p_r = torch.sigmoid(p_r_logit)
+    p_delta_r = torch.sigmoid(delta_r_logit)
+    p_delta_1mr = torch.sigmoid(delta_1mr_logit)
+    p_ctrl = torch.sigmoid(mu_c_logit)
+    p_composite_t = p_r * p_delta_r + (1.0 - p_r) * p_delta_1mr
+    gmv_pred_prob = torch.where(t > 0.5, p_composite_t, p_ctrl)
+    gmv_pred_prob = torch.clamp(gmv_pred_prob, 1e-6, 1.0 - 1e-6)
+    
+    # 【新增】将截断后的概率反解为 logit，以通过 PyTorch autocast 的安全检查
+    gmv_pred_logit = torch.logit(gmv_pred_prob) 
+    
+    # 【修改】使用 with_logits 版本的安全函数
+    loss_rdd = F.binary_cross_entropy_with_logits(gmv_pred_logit, y, reduction="mean")
+    # --- L_redem: mediator/核销 CE，仅 T=1 样本监督 ---
+    n_treat = t.sum() + 1e-8
+    l_redem_per = F.binary_cross_entropy_with_logits(p_r_logit, r, reduction="none")
+    loss_redem = (t * l_redem_per).sum() / n_treat
+    seller_w = config.get("canniuplift_seller_w", 1.0)
+    rdd_w = config.get("canniuplift_rdd_w", 1.0)
+    redem_w = config.get("canniuplift_redem_w", 1.0)
+    total_loss = seller_w * loss_seller + rdd_w * loss_rdd + redem_w * loss_redem
+    return total_loss, {
+        "canni_loss_seller": loss_seller.item(),
+        "canni_loss_rdd": loss_rdd.item(),
+        "canni_loss_redem": loss_redem.item(),
+        "canni_p_r_mean": p_r.mean().item(),
+    }
+
+
+
 # ==========================================
 # 本地验证脚本 (If __main__)
 # ==========================================
@@ -824,6 +989,8 @@ if __name__ == "__main__":
     for k, v in loss_details.items():
         print(f"  - {k:<10}: {v:.4f}")
     print(f"\n✅ 梯度回传检查: y1_pred.grad 是否存在? -> {y1_pred.grad is not None}")
+
+
 
 
 

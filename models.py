@@ -2474,6 +2474,129 @@ class EUEN(nn.Module):
 # =========================================================================
 # 🌟 官方 Git / Rankzoo 级别完美对齐复刻: EFIN (Uplift 拓扑两路分叉独立网络)
 # =========================================================================
+
+
+class EFIN_ours(nn.Module):
+    def __init__(self, continuous_dim, categorical_cardinalities, embed_dim=16, hidden_dims=[128, 64]):
+        super().__init__()
+        self.cont_dim = continuous_dim if continuous_dim is not None else 0
+        self.cat_cards = categorical_cardinalities or {}
+        self.embed_dim = embed_dim
+        
+        # -------------------------------------------
+        # Module 1: The Feature Encoder (Paper Eq 3)
+        # 必须把每个特征独立编码成 embed_dim，不能提前 concat！
+        # -------------------------------------------
+        # 连续特征：每个特征分配一个独立的线性映射 W*x + b
+        if self.cont_dim > 0:
+            self.cont_W = nn.Parameter(torch.empty(self.cont_dim, embed_dim))
+            self.cont_b = nn.Parameter(torch.empty(self.cont_dim, embed_dim))
+            nn.init.xavier_uniform_(self.cont_W)
+            nn.init.zeros_(self.cont_b)
+            
+        # 离散特征：标准的 Lookup Table
+        self.cat_embs = nn.ModuleDict({
+            col: nn.Embedding(card, embed_dim) for col, card in self.cat_cards.items()
+        })
+        
+        # 干预特征：(Paper 设定 treatment 也有特征，这里我们为二进制 T=1 分配一个专属 Embedding)
+        self.t_emb = nn.Embedding(2, embed_dim) 
+        
+        self.num_features = self.cont_dim + len(self.cat_cards)
+        
+        # -------------------------------------------
+        # Module 2: The Self-interaction (Paper Eq 4, 5, 6)
+        # 负责控制组的自然响应 (Natural Response)
+        # -------------------------------------------
+        # 论文推荐使用 Self-attention
+        self.self_attn = nn.MultiheadAttention(embed_dim=embed_dim, num_heads=2, batch_first=True)
+        
+        # 动态构建 natural_mlp，兼容任意层数
+        natural_layers = []
+        curr_dim = self.num_features * embed_dim
+        for dim in hidden_dims:
+            natural_layers.extend([nn.Linear(curr_dim, dim), nn.ReLU()])
+            curr_dim = dim
+        natural_layers.append(nn.Linear(curr_dim, 1))
+        self.natural_mlp = nn.Sequential(*natural_layers)
+        
+        # -------------------------------------------
+        # Module 3: Treatment-aware Interaction (Paper Eq 8, 9, 10)
+        # 负责建模特定干预下，特征的敏感度 (Uplift)
+        # -------------------------------------------
+        self.W_t1 = nn.Linear(embed_dim, embed_dim, bias=False)
+        self.W_t2 = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.W_t0 = nn.Linear(embed_dim, 1, bias=False)
+        
+        # 动态构建 uplift_mlp，兼容任意层数
+        uplift_layers = []
+        curr_dim_uplift = embed_dim
+        for dim in hidden_dims:
+            uplift_layers.extend([nn.Linear(curr_dim_uplift, dim), nn.ReLU()])
+            curr_dim_uplift = dim
+        uplift_layers.append(nn.Linear(curr_dim_uplift, 1))
+        self.uplift_mlp = nn.Sequential(*uplift_layers)
+        
+        # -------------------------------------------
+        # Module 4: Intervention Constraint (Paper Eq 13)
+        # 反向标签预测，防止分布差异
+        # -------------------------------------------
+        self.constraint_mlp = nn.Linear(embed_dim, 1)
+
+    def forward(self, x_cont, x_cat):
+        device = x_cont.device if x_cont is not None else x_cat[list(x_cat.keys())[0]].device
+        B = x_cont.shape[0] if x_cont is not None else x_cat[list(x_cat.keys())[0]].shape[0]
+        
+        # ==================================
+        # 1. 序列化特征编码 (B, F, D)
+        # ==================================
+        feat_embs = []
+        if self.cont_dim > 0:
+            # (B, F_cont, 1) * (1, F_cont, D) -> (B, F_cont, D)
+            cont_e = x_cont.unsqueeze(-1) * self.cont_W.unsqueeze(0) + self.cont_b.unsqueeze(0)
+            feat_embs.append(cont_e)
+        if len(self.cat_cards) > 0:
+            cat_e = [self.cat_embs[col](x_cat[col]).unsqueeze(1) for col in self.cat_cards.keys()]
+            feat_embs.append(torch.cat(cat_e, dim=1))
+            
+        X = torch.cat(feat_embs, dim=1) # Shape: (B, F, D)
+        
+        # ==================================
+        # 2. 控制组自然响应 y(0)
+        # ==================================
+        attn_out, _ = self.self_attn(X, X, X) # (B, F, D)
+        # 展平后过 MLP: concat(e_x) -> MLP
+        y0_logit = self.natural_mlp(attn_out.reshape(B, -1)).squeeze(-1) 
+        
+        # ==================================
+        # 3. 实验组增益预测 y(1) = y(0) + tau_1
+        # ==================================
+        # 获取 T=1 的专属表征 e^t
+        t1_idx = torch.ones((B,), dtype=torch.long, device=device)
+        e_t = self.t_emb(t1_idx) # (B, D)
+        
+        # 交叉注意力打分: alpha = Softmax(W_t0 * ReLU(W_t1*e_t + W_t2*X))
+        interact = F.relu(self.W_t1(e_t).unsqueeze(1) + self.W_t2(X)) # (B, F, D)
+        alpha = F.softmax(self.W_t0(interact), dim=1) # (B, F, 1)
+        
+        # 加权求和获取敏感特征 e^{xt}
+        e_xt = torch.sum(alpha * X, dim=1) # (B, D)
+        
+        # 预测纯增益 Uplift
+        tau_1 = self.uplift_mlp(e_xt).squeeze(-1) # (B,)
+        
+        # 显式相加
+        y1_logit = y0_logit + tau_1 
+        
+        # ==================================
+        # 4. 干预平衡约束 (用于 Loss 惩罚)
+        # ==================================
+        t_constraint_logit = self.constraint_mlp(e_xt).squeeze(-1)
+        
+        return y0_logit, y1_logit, {"efin_constraint_logit": t_constraint_logit}
+
+
+
 class EFIN(nn.Module):
     """
     EFIN 官方规格书 S11.2 最小 Diff 完美对齐审计版
@@ -3006,3 +3129,451 @@ class TARNET_Ours_S6_Conflict(TARNET_Residual_MoE):
             "wb_base_y1": base_y1
         })
         return y0, y1, pi_dict
+    
+
+
+import torch
+import torch.nn as nn
+
+# ==========================================
+# EFIN_0717new：官方 KDD'23 git 1:1 对齐版
+# ==========================================
+class EFIN_0717new(nn.Module):
+    def __init__(self, continuous_dim, categorical_cardinalities=None,
+                 hu_dim=128, hc_dim=64, is_self=False, act_type="elu",
+                 dropout_rate=0.0):
+        super().__init__()
+        categorical_cardinalities = categorical_cardinalities or {}
+        if len(categorical_cardinalities) > 0:
+            raise NotImplementedError(
+                "EFIN_0717new 是官方 git 的 1:1 端口，官方架构只吃纯连续 feature_list "
+                "(x_rep = feature_list.unsqueeze(2) * Embedding.weight)，没有离散特征分支。"
+                "传了非空 categorical_cardinalities={} 说明数据契约不是 Criteo 式纯连续，"
+                "需要先扩展官方公式再接，这里不做旁路近似。".format(categorical_cardinalities))
+        
+        self.nums_feature = continuous_dim if continuous_dim is not None else 0
+        self.hu_dim = hu_dim
+        self.hc_dim = hc_dim
+        self.is_self = is_self
+
+        self.att_embed_1 = nn.Linear(hu_dim, hu_dim, bias=False)
+        self.att_embed_2 = nn.Linear(hu_dim, hu_dim)
+        self.att_embed_3 = nn.Linear(hu_dim, 1, bias=False)
+
+        self.Q_w = nn.Linear(hu_dim, hu_dim, bias=True)
+        self.K_w = nn.Linear(hu_dim, hu_dim, bias=True)
+        self.V_w = nn.Linear(hu_dim, hu_dim, bias=True)
+        self.softmax = nn.Softmax(dim=-1)
+        self.attn_dropout = nn.Dropout(dropout_rate) if dropout_rate > 0 else None
+
+        self.x_rep = nn.Embedding(self.nums_feature, hu_dim)
+        self.t_rep = nn.Linear(1, hu_dim)
+
+        self.c_fc1 = nn.Linear(self.nums_feature * hu_dim, hc_dim)
+        self.c_fc2 = nn.Linear(hc_dim, hc_dim)
+        self.c_fc3 = nn.Linear(hc_dim, max(hc_dim // 2, 1))
+        self.c_fc4 = nn.Linear(max(hc_dim // 2, 1), max(hc_dim // 4, 1))
+        c_out_dim = max(hc_dim // 4, 1)
+        if is_self:
+            self.c_fc5 = nn.Linear(c_out_dim, max(hc_dim // 8, 1))
+            c_out_dim = max(hc_dim // 8, 1)
+        self.c_logit_head = nn.Linear(c_out_dim, 1)
+
+        self.u_fc1 = nn.Linear(hu_dim, hu_dim)
+        self.u_fc2 = nn.Linear(hu_dim, max(hu_dim // 2, 1))
+        self.u_fc3 = nn.Linear(max(hu_dim // 2, 1), max(hu_dim // 4, 1))
+        u_out_dim = max(hu_dim // 4, 1)
+        if is_self:
+            self.u_fc4 = nn.Linear(u_out_dim, max(hu_dim // 8, 1))
+            u_out_dim = max(hu_dim // 8, 1)
+        self.t_logit_head = nn.Linear(u_out_dim, 1)
+        self.u_tau_head = nn.Linear(u_out_dim, 1)
+
+        if act_type == "elu":
+            self.act = nn.ELU()
+        elif act_type == "relu":
+            self.act = nn.ReLU()
+        elif act_type == "tanh":
+            self.act = nn.Tanh()
+        elif act_type == "sigmoid":
+            self.act = nn.Sigmoid()
+        else:
+            raise ValueError("unknown act_type {}".format(act_type))
+
+    def self_attn(self, q, k, v):
+        Q, K, V = self.Q_w(q), self.K_w(k), self.V_w(v)
+        attn_weights = Q.matmul(K.transpose(1, 2)) / (K.shape[-1] ** 0.5)
+        attn_weights = self.softmax(torch.sigmoid(attn_weights))
+        if self.attn_dropout is not None:
+            attn_weights = self.attn_dropout(attn_weights)
+        return attn_weights.matmul(V), attn_weights
+
+    def interaction_attn(self, t, x):
+        attn = []
+        for i in range(self.nums_feature):
+            temp = self.att_embed_3(torch.relu(
+                torch.sigmoid(self.att_embed_1(t)) + torch.sigmoid(self.att_embed_2(x[:, i, :]))))
+            attn.append(temp)
+        attn = torch.squeeze(torch.stack(attn, 1), 2)
+        attn = torch.softmax(attn, 1)
+        out = torch.squeeze(torch.matmul(torch.unsqueeze(attn, 1), x), 1)
+        return out, attn
+
+    def forward(self, x_cont, x_cat=None):
+        B = x_cont.shape[0]
+        ones_t = torch.ones((B, 1), dtype=x_cont.dtype, device=x_cont.device)
+
+        x_rep = x_cont.unsqueeze(2) * self.x_rep.weight.unsqueeze(0)  # [B, K, hu]
+
+        x_rep_norm = x_rep / torch.linalg.norm(x_rep, dim=1, keepdim=True).clamp_min(1e-12)
+        xx, _ = self.self_attn(x_rep_norm, x_rep_norm, x_rep_norm)
+        flat = xx.reshape(B, -1)
+        c_last = self.act(self.c_fc1(flat))
+        c_last = self.act(self.c_fc2(c_last))
+        c_last = self.act(self.c_fc3(c_last))
+        c_last = self.act(self.c_fc4(c_last))
+        if self.is_self:
+            c_last = self.act(self.c_fc5(c_last))
+        c_logit = self.c_logit_head(c_last).squeeze(-1)
+
+        t_rep = self.t_rep(ones_t)
+        xt, _ = self.interaction_attn(t_rep, x_rep)
+        u_last = self.act(self.u_fc1(xt))
+        u_last = self.act(self.u_fc2(u_last))
+        u_last = self.act(self.u_fc3(u_last))
+        if self.is_self:
+            u_last = self.act(self.u_fc4(u_last))
+        t_logit = self.t_logit_head(u_last).squeeze(-1)
+        u_tau = self.u_tau_head(u_last).squeeze(-1)
+
+        y0_logit = c_logit
+        y1_logit = c_logit.detach() + u_tau
+
+        return y0_logit, y1_logit, {"efin_t_logit": t_logit}
+
+
+# ==========================================
+# ECUP_0717new系列：修正版 ECUP
+# ==========================================
+class TAUBranch_0717new(nn.Module):
+    """TENet_0717new 里的一个独立 TAU：self-attn(Eq9-11) + TIE(Eq12)，对应论文 Eq13"""
+    def __init__(self, d_dim, num_heads=2):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(embed_dim=d_dim, num_heads=num_heads, batch_first=True)
+        self.tie_mlp = nn.Sequential(nn.Linear(d_dim, d_dim), nn.ReLU())
+
+    def forward(self, E_x, E_tr):
+        E_att, _ = self.self_attn(E_x, E_x, E_x)   # Eq9-11
+        E_bit = self.tie_mlp(E_tr)                  # Eq12
+        return E_att * E_bit                        # Eq13: E^TAU = E^att ⊗ E^bit
+
+
+class TENet_0717new(nn.Module):
+    """Treatment-Enhanced Network 修正版：两个独立 TAU（论文 Eq14）"""
+    def __init__(self, f_num, d_dim, num_heads=2):
+        super().__init__()
+        self.f_num = f_num
+        self.d_dim = d_dim
+        self.tau_g = TAUBranch_0717new(d_dim, num_heads=num_heads)   # 生成 treatment-aware 内容
+        self.tau_w = TAUBranch_0717new(d_dim, num_heads=num_heads)   # 生成 bit-level 门权重
+
+    def forward(self, E_x, E_tr):
+        E_TAU_g = self.tau_g(E_x, E_tr)
+        W_b = self.tau_w(E_x, E_tr)
+        gate = torch.sigmoid(W_b)
+        E_r = E_x * gate + E_TAU_g * (1 - gate)      # Eq15 TEGate
+        E_r_final = torch.cat([E_r, E_tr], dim=1)    # Eq16
+        return E_r_final
+
+
+class TAENet_0717new(nn.Module):
+    """Task-Enhanced Network 修正版：cross-attn 的 K/V 对 E_r_final 停梯度（论文 Eq5 ⊘）"""
+    def __init__(self, d_dim, tae_h, tower_h, num_tasks=2, num_heads=2, gamma=1.0):
+        super().__init__()
+        self.gamma = gamma
+        self.num_tasks = num_tasks
+        self.E_ta = nn.Parameter(torch.randn(num_tasks, d_dim))
+        self.cross_attn = nn.MultiheadAttention(embed_dim=d_dim, num_heads=num_heads, batch_first=True)
+        self.tae_mlp = nn.Sequential(
+            nn.Linear(d_dim, tae_h),
+            nn.ReLU(),
+            nn.Linear(tae_h, tower_h),
+        )
+
+    def forward(self, E_r_final):
+        B = E_r_final.size(0)
+        query = self.E_ta.unsqueeze(0).expand(B, -1, -1)
+        kv = E_r_final.detach()   # 论文 Eq5 ⊘：只更新 E_ta，不让梯度倒灌回 TENet
+        E_pri, _ = self.cross_attn(query, kv, kv)   # Eq5
+        delta = self.gamma * torch.sigmoid(self.tae_mlp(E_pri))   # Eq6
+        return delta
+
+
+class ECUP_0717new(nn.Module):
+    """ECUP 修正版：字段独立投影同原版不变；TENet/TAENet/Tower 三处按论文修正"""
+    def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
+                 tower_h: int = 128, tae_h: int = 64, d_dim: int = 16,
+                 num_heads: int = 2, gamma: float = 1.0):
+        super().__init__()
+        self.d_dim = d_dim
+        self.cont_dim = continuous_dim
+        self.cat_cards = categorical_cardinalities or {}
+        self.f_num = self.cont_dim + len(self.cat_cards)
+
+        self.cont_projections = nn.ModuleList([
+            nn.Linear(1, d_dim) for _ in range(self.cont_dim)
+        ])
+        self.cat_embeddings = nn.ModuleDict({
+            col: nn.Embedding(card, d_dim)
+            for col, card in self.cat_cards.items()
+        })
+
+        self.t_emb_0 = nn.Parameter(torch.randn(1, 1, d_dim))
+        self.t_emb_1 = nn.Parameter(torch.randn(1, 1, d_dim))
+
+        self.tenet = TENet_0717new(f_num=self.f_num, d_dim=d_dim, num_heads=num_heads)
+        self.taenet = TAENet_0717new(d_dim=d_dim, tae_h=tae_h, tower_h=tower_h,
+                                      num_tasks=2, num_heads=num_heads, gamma=gamma)
+
+        self.shared_layer1 = nn.Sequential(nn.Linear((self.f_num + 1) * d_dim, tower_h), nn.ReLU())
+        self.shared_layer2 = nn.Sequential(nn.Linear(tower_h, tower_h), nn.ReLU())
+        self.ctr_out = nn.Linear(tower_h, 1)
+        self.cvr_out = nn.Linear(tower_h, 1)
+
+    def _get_initial_embeddings(self, x_cont, x_cat):
+        all_field_embeds = []
+        if x_cont is not None:
+            for i in range(self.cont_dim):
+                feat = x_cont[:, i:i + 1]
+                all_field_embeds.append(self.cont_projections[i](feat).unsqueeze(1))
+        if x_cat is not None:
+            for col, val in x_cat.items():
+                all_field_embeds.append(self.cat_embeddings[col](val).unsqueeze(1))
+        return torch.cat(all_field_embeds, dim=1)
+
+    def _forward_once(self, x_cont, x_cat, T):
+        E_x = self._get_initial_embeddings(x_cont, x_cat)
+        B = E_x.size(0)
+
+        E_tr = self.t_emb_1.expand(B, -1, -1) if T == 1 else self.t_emb_0.expand(B, -1, -1)
+
+        E_r_final = self.tenet(E_x, E_tr)
+        delta = self.taenet(E_r_final)   # [B, 2, tower_h]
+
+        l1_out = self.shared_layer1(E_r_final.view(B, -1))   # [B, tower_h]
+
+        ctr_h1 = l1_out * delta[:, 0, :]
+        ctr_h2 = self.shared_layer2(ctr_h1) * delta[:, 0, :]
+        ctr_logit = self.ctr_out(ctr_h2).squeeze(-1)
+
+        cvr_h1 = l1_out * delta[:, 1, :]
+        cvr_h2 = self.shared_layer2(cvr_h1) * delta[:, 1, :]
+        cvr_logit = self.cvr_out(cvr_h2).squeeze(-1)
+
+        return ctr_logit, cvr_logit
+
+    def forward(self, x_cont, x_cat):
+        c0_logit, cvr0_logit = self._forward_once(x_cont, x_cat, T=0)
+        c1_logit, cvr1_logit = self._forward_once(x_cont, x_cat, T=1)
+        return {
+            "c_logits": (c0_logit, c1_logit),
+            "cvr_logits": (cvr0_logit, cvr1_logit),
+            "pi_dict": {},
+            "ecup_0717new": True,
+        }
+
+
+# ==========================================
+# MTMT_0717new系列：UTI 换成论文对齐的 softmax 版
+# ==========================================
+class UserTreatmentInteraction_0717new(nn.Module):
+    def __init__(self, t_dim, u_dim, out_dim):
+        super().__init__()
+        self.W_t = nn.Linear(t_dim, out_dim)
+        self.W_u = nn.Linear(u_dim, out_dim)
+        self.W_v = nn.Linear(u_dim, out_dim)
+        self.scale = out_dim ** 0.5
+
+    def forward(self, epsilon, phi):
+        Q = self.W_t(epsilon)  # [B, out_dim]
+        K = self.W_u(phi)      # [B, out_dim]
+        V = self.W_v(phi)      # [B, out_dim]
+        attn_score = torch.softmax((Q * K) / self.scale, dim=-1)
+        psi = attn_score * V  # [B, out_dim]
+        return psi
+
+
+class MTMT_0717new(nn.Module):
+    def __init__(self, continuous_dim: int, categorical_cardinalities: dict,
+                 num_experts: int = 4, expert_type: str = "mlp", expert_hidden_dims: list = [64],
+                 dropout_rate: float = 0.1, t_emb_dim: int = 16):
+        super().__init__()
+        # 假设上下文中已有 FeatureEncoder 和 MMoE_Layer
+        self.encoder = FeatureEncoder(continuous_dim, categorical_cardinalities)
+
+        self.mmoe = MMoE_Layer(
+            input_dim=self.encoder.output_dim,
+            num_experts=num_experts,
+            num_tasks=2,
+            expert_type=expert_type,
+            expert_hidden_dims=expert_hidden_dims,
+            dropout_rate=dropout_rate
+        )
+        expert_out_dim = self.mmoe.expert_out_dim
+
+        self.t_emb = nn.Parameter(torch.randn(1, t_emb_dim))
+
+        self.y0_head_main = nn.Linear(expert_out_dim, 1)
+        self.interaction_main = UserTreatmentInteraction_0717new(t_emb_dim, expert_out_dim, expert_out_dim)
+        self.enhancer_main = nn.Sequential(
+            nn.Linear(expert_out_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+
+        self.y0_head_aux = nn.Linear(expert_out_dim, 1)
+        self.interaction_aux = UserTreatmentInteraction_0717new(t_emb_dim, expert_out_dim, expert_out_dim)
+        self.enhancer_aux = nn.Sequential(
+            nn.Linear(expert_out_dim, 32),
+            nn.ReLU(),
+            nn.Linear(32, 1)
+        )
+
+    def forward(self, x_cont, x_cat):
+        x = self.encoder(x_cont, x_cat)
+        phi_main, phi_aux = self.mmoe(x)
+
+        y0_main = self.y0_head_main(phi_main).squeeze(-1)
+        y0_aux = self.y0_head_aux(phi_aux).squeeze(-1)
+
+        eps = self.t_emb.expand(x.size(0), -1)
+
+        psi_main = self.interaction_main(eps, phi_main)
+        psi_aux = self.interaction_aux(eps, phi_aux)
+
+        tau_main = self.enhancer_main(psi_main).squeeze(-1)
+        tau_aux = self.enhancer_aux(psi_aux).squeeze(-1)
+
+        y1_main = y0_main + tau_main
+        y1_aux = y0_aux + tau_aux
+
+        return {
+            "main_task": (y0_main, y1_main),
+            "aux_task": (y0_aux, y1_aux),
+            "pi_dict": {}
+        }
+
+class _CanniFieldAttn(nn.Module):
+    """Treat-Attention 的字段版实现.
+    论文 Fig.2 的 Treat-Attention 是「候选券特征 query attend 用户行为序列 K/V」，但本仓
+    `UpliftDataset`（criteo/hillstrom）只有静态表格特征、没有候选券列也没有行为序列列。
+    这里借用同文件 `ECUP_Model`/`TENet` 的字段 tokenization 套路：把每个特征字段各投影成
+    一个 `d_dim` 的 token，拼成 `E_x: [B, f_num, d_dim]` 当作行为序列的替身；一个可学习的
+    query token（扮演"候选券"）对这些字段 token 做一次 cross-attention，输出交互向量拼进
+    z，供下游 Seller/RDD 头使用（对应 CANNIUPLIFT_PYTORCH_IMPLEMENTATION_SPEC.md §5.3 的角色，
+    只是 K/V 换成字段 token 而不是真实序列）。
+    """
+    def __init__(self, continuous_dim, categorical_cardinalities, d_dim=16, num_heads=2):
+        super().__init__()
+        self.cont_dim = continuous_dim or 0
+        self.cat_cards = categorical_cardinalities or {}
+        self.output_dim = d_dim
+        self.cont_projections = nn.ModuleList([nn.Linear(1, d_dim) for _ in range(self.cont_dim)])
+        self.cat_embeddings = nn.ModuleDict(
+            {col: nn.Embedding(card, d_dim) for col, card in self.cat_cards.items()}
+        )
+        self.query = nn.Parameter(torch.randn(1, 1, d_dim) * 0.02)
+        self.mha = nn.MultiheadAttention(embed_dim=d_dim, num_heads=num_heads, batch_first=True)
+    def _field_tokens(self, x_cont, x_cat):
+        toks = []
+        if x_cont is not None:
+            for i in range(self.cont_dim):
+                toks.append(self.cont_projections[i](x_cont[:, i:i + 1]).unsqueeze(1))
+        if x_cat is not None:
+            for col in self.cat_embeddings:
+                toks.append(self.cat_embeddings[col](x_cat[col]).unsqueeze(1))
+        if not toks:
+            raise ValueError("_CanniFieldAttn: need x_cont and/or categorical features")
+        return torch.cat(toks, dim=1)  # [B, f_num, d_dim]
+    def forward(self, x_cont, x_cat):
+        e_x = self._field_tokens(x_cont, x_cat)  # [B, f_num, d_dim]
+        q = self.query.expand(e_x.size(0), -1, -1)  # [B, 1, d_dim]
+        attn_out, _ = self.mha(q, e_x, e_x)
+        return attn_out.squeeze(1)  # [B, d_dim]
+def _canni_mlp_tower(in_dim, hidden_dims, activation=nn.ELU, head_bias=0.1):
+    """CanniUplift 专用的 tower builder（同 st_baselines_ext._mlp_tower 款式，
+    这里不反向依赖 st_baselines_ext，保持 models.py 自包含）。"""
+    layers = []
+    d = in_dim
+    for h in hidden_dims:
+        layers.append(nn.Linear(d, h))
+        layers.append(activation())
+        d = h
+    head = nn.Linear(d, 1)
+    nn.init.constant_(head.bias, head_bias)
+    layers.append(head)
+    return nn.Sequential(*layers)
+def _canni_tower_logits(seq, x):
+    """跑 MLP 除最后一层外的全部层，最后一层不经激活直出 raw logit。"""
+    h = x
+    for layer in list(seq)[:-1]:
+        h = layer(h)
+    return seq[-1](h).squeeze(-1)
+class CanniUplift(nn.Module):
+    """CanniUplift 全量口径 port（KDD'26 ADS 投稿 Submission 797，无官方 git）——
+    Treat-Attention + Seller-local 双塔 + RDD（核销/中介分解去噪）三块结构，对齐
+    rankzoo TF 源 `model_bias_uplift_euen_ord_seq_canniuplift.py` 与
+    `analysis_artifacts/baseline_port/CANNIUPLIFT_PYTORCH_IMPLEMENTATION_SPEC.md`。
+    forward(x_cont, x_cat) -> (y0_logit, y1_logit, pi_dict)：
+      - y0_logit/y1_logit：Seller-local 双塔的 raw logit（eval 侧 uplift = sigmoid(y1)-sigmoid(y0)，
+        与仓内其它 baseline 的元组契约一致，不需要改 evaluator.py）。
+      - pi_dict 额外携带 RDD 四个头（均为 raw logit）：
+          canni_p_r_logit       P(mediator=1 | T=1, X)          -- 只在 T=1 用 mediator 监督
+          canni_mu_c_logit      RDD 的 control 支路（不是 y0，是单独一个头，见 spec §5.4）
+          canni_delta_r_logit   P(Y=1 | T=1, R=1, X)
+          canni_delta_1mr_logit P(Y=1 | T=1, R=0, X)
+    """
+    def __init__(
+        self,
+        continuous_dim,
+        categorical_cardinalities,
+        hidden_dims=None,
+        use_treat_attn=True,
+        attn_d_dim=16,
+        attn_num_heads=2,
+    ):
+        super().__init__()
+        hidden_dims = hidden_dims or [128, 64]
+        self.use_treat_attn = bool(use_treat_attn)
+        self.encoder = FeatureEncoder(continuous_dim, categorical_cardinalities)
+        z_dim = self.encoder.output_dim
+        if self.use_treat_attn:
+            self.treat_attn = _CanniFieldAttn(
+                continuous_dim, categorical_cardinalities, d_dim=attn_d_dim, num_heads=attn_num_heads,
+            )
+            z_dim += self.treat_attn.output_dim
+        else:
+            self.treat_attn = None
+        # Seller-view local twin tower：trace uplift = y1-y0（与仓内其它 baseline 同一套契约）。
+        self.head_y0 = _canni_mlp_tower(z_dim, hidden_dims)
+        self.head_y1 = _canni_mlp_tower(z_dim, hidden_dims)
+        # RDD 头单层 Linear 即可，不进 cap 档（对齐 spec §5.5「RDD/p_r 头：不进 cap 档」）。
+        self.head_p_r = nn.Linear(z_dim, 1)
+        self.head_mu_c = nn.Linear(z_dim, 1)
+        self.head_delta_r = nn.Linear(z_dim, 1)
+        self.head_delta_1mr = nn.Linear(z_dim, 1)
+    def forward(self, x_cont, x_cat):
+        phi = self.encoder(x_cont, x_cat)
+        if self.use_treat_attn:
+            z = torch.cat([phi, self.treat_attn(x_cont, x_cat)], dim=-1)
+        else:
+            z = phi
+        y0_logit = _canni_tower_logits(self.head_y0, z)
+        y1_logit = _canni_tower_logits(self.head_y1, z)
+        pi_dict = {
+            "canni_p_r_logit": self.head_p_r(z).squeeze(-1),
+            "canni_mu_c_logit": self.head_mu_c(z).squeeze(-1),
+            "canni_delta_r_logit": self.head_delta_r(z).squeeze(-1),
+            "canni_delta_1mr_logit": self.head_delta_1mr(z).squeeze(-1),
+        }
+        return y0_logit, y1_logit, pi_dict

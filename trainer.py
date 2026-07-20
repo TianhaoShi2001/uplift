@@ -163,6 +163,7 @@ def build_model(config, data_spec, device):
                     head_hidden_dims=head_hidden_dims, 
                     ours_s4_use_stop_grad=config.get("ours_s4_use_stop_grad", False) 
                 ).to(device)
+
                 
             elif config.get("c_fusion_mode") == "ours_s6_conflict":
                 return TARNET_Ours_S6_Conflict(
@@ -215,6 +216,54 @@ def build_model(config, data_spec, device):
         return DragonNet(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config.get("hidden_dims", [128, 64])).to(device)
     elif model_type == "EUEN":
         return EUEN(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, hidden_dims=config.get("hidden_dims", [128, 64])).to(device)
+    
+    elif model_type == "EFIN_ours":
+        # EFIN 的超参提取 (注意要把 embed_dim 也传进去)
+        embed_dim = config.get("efin_embed_dim", 16)
+        hidden_dims = config.get("hidden_dims", [128, 64])
+        return EFIN_ours(continuous_dim=cont_dim, categorical_cardinalities=cat_cards, 
+                             embed_dim=embed_dim, hidden_dims=hidden_dims).to(device)
+    elif model_type == "CanniUplift":
+        return CanniUplift(
+            continuous_dim=cont_dim,
+            categorical_cardinalities=cat_cards,
+            hidden_dims=config.get("hidden_dims", [128, 64]),
+            use_treat_attn=config.get("canniuplift_use_treat_attn", True),
+            attn_d_dim=config.get("canniuplift_attn_d_dim", 16),
+            attn_num_heads=config.get("canniuplift_attn_num_heads", 2),
+        ).to(device)
+    elif model_type == "EFIN_0717new":
+        return EFIN_0717new(
+            continuous_dim=cont_dim,
+            categorical_cardinalities=cat_cards,
+            hu_dim=config.get("efin_hu_dim", 128),
+            hc_dim=config.get("efin_hc_dim", 64),
+            is_self=config.get("efin_is_self", False),
+            act_type=config.get("efin_act_type", "elu"),
+            dropout_rate=config.get("efin_dropout", 0.0),
+        ).to(device)
+
+    elif model_type == "ECUP_0717new":
+        return ECUP_0717new(
+            continuous_dim=cont_dim,
+            categorical_cardinalities=cat_cards,
+            d_dim=config.get("d_dim", 16),
+            gamma=config.get("gamma", 1.0),
+            tower_h=config.get("tower_h", 128),
+            tae_h=config.get("tae_h", 64),
+            num_heads=config.get("num_heads", 2)
+        ).to(device)
+
+    elif model_type == "MTMT_0717new":
+        return MTMT_0717new(
+            continuous_dim=cont_dim,
+            categorical_cardinalities=cat_cards,
+            num_experts=config.get("num_experts", 4),
+            expert_type=config.get("expert_type", "mlp"),
+            expert_hidden_dims=config.get("expert_hidden_dims", [64]),
+            dropout_rate=config.get("dropout_rate", 0.1),
+            t_emb_dim=config.get("t_emb_dim", 16)
+        ).to(device)
     elif model_type == "EFIN":
         # 🌟 核心修改：剔除大盘通用的 config.get("hidden_dims")，只认 efin_embed_dim 作为唯一隐藏宽度！
         # 如果 search_space 传进来的是 efin_embed_dim，则用它，否则默认兜底 64。
@@ -757,6 +806,23 @@ def train_trial(trial_cfg):
                         loss, loss_comp = compute_mtmt_loss(
                             preds_dict, y, c, t, preds_dict["pi_dict"], current_cfg, dro_criterion
                         )
+                    elif current_cfg.get("model") == "EFIN_0717new":
+                        y0_pred, y1_pred, pi_dict = model(x_cont, x_cat)
+                        loss, loss_comp = compute_efin_0717new_loss(y0_pred, y1_pred, y, t, pi_dict, current_cfg)
+                    elif trial_cfg.get("model") == "CanniUplift":
+                        # 🌟 mediator c（本仓 visit）扮演论文的核销标签 r，喂给 RDD 分支
+                        y0_pred, y1_pred, pi_dict = model(x_cont, x_cat)
+                        loss, loss_comp = compute_canniuplift_loss(y0_pred, y1_pred, y, t, c, pi_dict, trial_cfg)
+                    elif current_cfg.get("model") == "ECUP_0717new":
+                        preds_dict = model(x_cont, x_cat)
+                        loss, loss_comp = compute_ecup_0717new_loss(preds_dict, y, c, t, current_cfg)
+
+                    elif current_cfg.get("model") == "MTMT_0717new":
+                        # 输出格式 (main_task/aux_task/pi_dict) 和原版 MTMT 完全一致，直接复用 compute_mtmt_loss
+                        preds_dict = model(x_cont, x_cat)
+                        loss, loss_comp = compute_mtmt_loss(
+                            preds_dict, y, c, t, preds_dict["pi_dict"], current_cfg , dro_criterion
+                        )
                     elif current_cfg.get("model") == "MOTTO":
                         preds_dict = model(x_cont, x_cat)
                         loss, loss_comp = compute_motto_loss(preds_dict, y, c, t, current_cfg)
@@ -766,6 +832,9 @@ def train_trial(trial_cfg):
                     elif current_cfg.get("model") == "EFIN":
                         y0_pred, y1_pred, pi_dict = model(x_cont, x_cat)
                         loss, loss_comp = compute_efin_loss(y0_pred, y1_pred, y, t, pi_dict, current_cfg)
+                    elif current_cfg.get("model") == "EFIN_ours":
+                        y0_pred, y1_pred, pi_dict = model(x_cont, x_cat)
+                        loss, loss_comp = compute_efin_ours_loss(y0_pred, y1_pred, y, t, pi_dict, current_cfg)
                     elif current_cfg.get("model") == "S_Learner":
                         y0_pred, y1_pred, pi_dict = model(x_cont, x_cat, t=t) 
                         loss, _ = compute_stage3_loss(y0_pred, y1_pred, y, t, pi_dict, current_cfg, dro_criterion=dro_criterion)
