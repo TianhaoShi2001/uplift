@@ -340,7 +340,22 @@ def compute_stage3_loss(y0_pred, y1_pred, targets, treatment, pi_dict, config, d
             weights = torch.clamp(weights, max=max_weight_thres)
 
         # 7. 均值归一化防梯度崩盘
-        weights = weights / (weights.mean() + 1e-8)
+        # weights = weights / (weights.mean() + 1e-8)
+        # 6b. 下保底（工业 bl*；可选；默认关）
+        min_weight_thres = config.get("conflict_min_weight_thres", None)
+        if min_weight_thres is not None:
+            weights = torch.clamp(weights, min=float(min_weight_thres))
+
+        # 7. 均值归一化（可关）· 工业 rnc* = renorm none + weight_clip
+        #    conflict_renorm: "mean"(默认) | "none"
+        renorm = config.get("conflict_renorm", "mean")
+        if renorm == "mean":
+            weights = weights / (weights.mean() + 1e-8)
+        elif renorm == "none":
+            pass
+        else:
+            raise ValueError(f"conflict_renorm must be 'mean' or 'none', got {renorm}")
+
         conflict_loss = (bce_raw * weights).mean()
         total_loss += conflict_loss
         loss_components["conflict_loss"] = conflict_loss.item()
@@ -917,7 +932,8 @@ def compute_canniuplift_loss(y0_pred, y1_pred, targets, treatment, mediator, pi_
     p_ctrl = torch.sigmoid(mu_c_logit)
     p_composite_t = p_r * p_delta_r + (1.0 - p_r) * p_delta_1mr
     gmv_pred_prob = torch.where(t > 0.5, p_composite_t, p_ctrl)
-    gmv_pred_prob = torch.clamp(gmv_pred_prob, 1e-6, 1.0 - 1e-6)
+    gmv_pred_prob = gmv_pred_prob.float()
+    gmv_pred_prob = torch.clamp(gmv_pred_prob, 1e-4, 1.0 - 1e-4)
     
     # 【新增】将截断后的概率反解为 logit，以通过 PyTorch autocast 的安全检查
     gmv_pred_logit = torch.logit(gmv_pred_prob) 

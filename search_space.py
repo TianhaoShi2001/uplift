@@ -573,6 +573,105 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
                 "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
             })
+        # ----------------------------------------------------------
+        # Criteo · V8_s6 + H20 OFAT（傻瓜单轴）· 基于最新 prior_conflict 键名
+        # 对照工业：rnc=关renorm+clip · k50=ohem · pw=羊毛α · bl=下保底
+        # ----------------------------------------------------------
+
+        elif version == "y_v8_s6_cf_b0":
+            # Loss 对照尺：conflict 开 · renorm=mean · 无 clip/ohem/focal
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([6]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "weight_decay": tune.grid_search([1e-3,1e-2]),
+                "hidden_dims": tune.grid_search([[64,32]]), 
+                "conflict_mode": tune.grid_search(["all"]),
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_renorm": tune.grid_search(["mean"]),
+                "conflict_focal_type": tune.grid_search(["none"]),
+                "conflict_use_ohem": tune.grid_search([False]),
+                "conflict_use_weight_clip": tune.grid_search([False]),
+            })
+
+        elif version == "y_v8_s6_rnc":
+            # 主轴：关均值抹平 + 硬帽（工业 rnc3/5/8）
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([6]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "weight_decay": tune.grid_search([1e-3,1e-2]),
+                "hidden_dims": tune.grid_search([[64,32]]), 
+                "conflict_mode": tune.grid_search(["all"]),
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_renorm": tune.grid_search(["none"]),
+                "conflict_focal_type": tune.grid_search(["none"]),
+                "conflict_use_ohem": tune.grid_search([False]),
+                "conflict_use_weight_clip": tune.grid_search([True]),
+                "conflict_max_weight_thres": tune.grid_search([3.0, 5.0, 8.0]),
+            })
+        elif version == "y_v8_s6_c":
+            # 主轴：关均值抹平 + 硬帽（工业 rnc3/5/8）
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([6]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "weight_decay": tune.grid_search([1e-3,1e-2]),
+                "hidden_dims": tune.grid_search([[64,32]]), 
+                "conflict_mode": tune.grid_search(["all"]),
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_renorm": tune.grid_search(["mean"]),
+                "conflict_focal_type": tune.grid_search(["none"]),
+                "conflict_use_ohem": tune.grid_search([False]),
+                "conflict_use_weight_clip": tune.grid_search([True]),
+                "conflict_max_weight_thres": tune.grid_search([3.0, 5.0, 8.0]),
+            })
+
+        elif version == "y_v8_s6_ohem":
+            # 次轴：renorm 仍开 · 只保留最难 ohem_pct（工业 k50 ≈ 0.5）
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([6]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "weight_decay": tune.grid_search([1e-3,1e-2]),
+                "hidden_dims": tune.grid_search([[64,32]]), 
+                "conflict_mode": tune.grid_search(["all"]),
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_renorm": tune.grid_search(["mean"]),
+                "conflict_focal_type": tune.grid_search(["none"]),
+                "conflict_use_ohem": tune.grid_search([True]),
+                "conflict_ohem_pct": tune.grid_search([0.2,0.3, 0.4, 0.5, 0.6, 0.7,0.8,0.1,0.9]),
+                "conflict_use_weight_clip": tune.grid_search([False]),
+            })
+
+
+        elif version == "y_v8_s6_bl":
+            # 弱轴：下保底（工业 bl*）
+            space.update({
+                "c_fusion_mode": tune.grid_search(["v8_evolution_moe"]),
+                "v8_scheme": tune.grid_search([6]),
+                "loss_types": tune.grid_search([["prior_conflict"]]),
+                "weight_decay": tune.grid_search([1e-3,1e-2]),
+                "hidden_dims": tune.grid_search([[64,32]]), 
+                "conflict_mode": tune.grid_search(["all"]),
+                "conflict_alpha_wool": tune.grid_search([1, 5, 10]),  # ([0.05, 0, 0.01, 1, 0.5, 5, 10 , 0.1]),  # ([1, 0.5, 5, 10 , 0.1]),   
+                "conflict_alpha_gold": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_alpha_walkin": tune.sample_from(lambda spec: spec.config["conflict_alpha_wool"]),  
+                "conflict_renorm": tune.grid_search(["mean"]),
+                "conflict_focal_type": tune.grid_search(["none"]),
+                "conflict_use_ohem": tune.grid_search([False]),
+                "conflict_use_weight_clip": tune.grid_search([False]),
+                "conflict_min_weight_thres": tune.grid_search([0.1, 0.25, 0.5]),
+            })
+
         elif version == "y_pure_v10_0717_h_None_search_alpha":
             space.update({
                 "model": tune.grid_search(["TARNET_Baseline_PureV10"]), 
@@ -1586,6 +1685,7 @@ def get_ray_search_space(task="train_y", version="v1_baseline"):
                 "canniuplift_rdd_w": tune.grid_search([0.5, 1.0, 2.0]),
                 "canniuplift_redem_w": tune.grid_search([0.5, 1.0, 2.0]),
             })
+        
 
         else:
             space.update({

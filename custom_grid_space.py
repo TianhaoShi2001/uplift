@@ -99,6 +99,317 @@ for version, diff_dict in RAW_NEW_TOP3.items():
     base_space_copied.update(diff_dict)
     ALL_CUSTOM_SPACES[version] = base_space_copied
 
+
+# 🌟 76 组实验中突围的 Top 15 王炸组合 (4 Seed 验证候选)
+RAW_TOP15_SEEDS = {
+    "s6_top1_auuc9151_h64_32_a5.0_wd0.01": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.01
+    },
+    "s6_top2_auuc9149_h64_32_a10.0_wd0.01": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.01
+    },
+    "s6_top3_auuc9144_h16_a10.0_wd0.0001": {  # 注意：这个跑出高分的是 [16] 极简网络
+        "model": "TARNET", "hidden_dims": [16], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.0001
+    },
+    "s6_top4_auuc9135_h64_32_a1.0_wd0.01": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 1.0, "conflict_alpha_gold": 1.0, "conflict_alpha_walkin": 1.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.01
+    },
+    "s6_top5_auuc9134_h64_32_a10.0_wd0.0001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.0001
+    },
+    "s6_top6_auuc9134_h64_32_a10.0_wd0.001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.001
+    },
+    "s6_top7_auuc9132_h64_32_a1.0_wd0.0001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 1.0, "conflict_alpha_gold": 1.0, "conflict_alpha_walkin": 1.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.0001
+    },
+    "s6_top8_auuc9131_h64_32_a1.0_wd0.001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 1.0, "conflict_alpha_gold": 1.0, "conflict_alpha_walkin": 1.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.001
+    },
+    "s6_top9_auuc9131_h64_32_a1.0_wd1e5": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 1.0, "conflict_alpha_gold": 1.0, "conflict_alpha_walkin": 1.0,
+        "ours_s6_temp": 1.0, "weight_decay": 1e-05
+    },
+    "s6_top10_auuc9124_h64_32_a5.0_wd0.0001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.0001
+    },
+    "s6_top11_auuc9124_h64_32_a0.1_wd0.001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 0.1, "conflict_alpha_gold": 0.1, "conflict_alpha_walkin": 0.1,
+        "ours_s6_temp": 1.0, "weight_decay": 0.001
+    },
+    "s6_top12_auuc9123_h64_32_a5.0_wd0.001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "ours_s6_temp": 1.0, "weight_decay": 0.001
+    },
+    "s6_top13_auuc9117_h64_32_a0.1_wd0.0001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 0.1, "conflict_alpha_gold": 0.1, "conflict_alpha_walkin": 0.1,
+        "ours_s6_temp": 1.0, "weight_decay": 0.0001
+    },
+    "s6_top14_auuc9115_h64_32_a0.5_wd0.0001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 0.5, "conflict_alpha_gold": 0.5, "conflict_alpha_walkin": 0.5,
+        "ours_s6_temp": 1.0, "weight_decay": 0.0001
+    },
+    "s6_top15_auuc9115_h64_32_a0.5_wd0.001": {
+        "model": "TARNET", "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "c_fusion_mode": "ours_s6_conflict", "loss_types": ["prior_conflict"], "conflict_mode": "all",
+        "conflict_alpha_wool": 0.5, "conflict_alpha_gold": 0.5, "conflict_alpha_walkin": 0.5,
+        "ours_s6_temp": 1.0, "weight_decay": 0.001
+    }
+}
+
+for version, diff_dict in RAW_TOP15_SEEDS.items():
+    base_space_copied = DEFAULT_BASE_SPACE.copy()
+    base_space_copied.update(diff_dict)
+    ALL_CUSTOM_SPACES[version] = base_space_copied
+
+
+# 🌟 CanniUplift (权重全为 1.0 的 Y_AUUC Top 5 多 Seed 验证组)
+TOP5_CANNI_W1_SEEDS = {
+    "canni_w1_top1_h128_64_wd0.01": {
+        "model": "CanniUplift", "hidden_dims": [128, 64], "weight_decay": 0.01,
+        "canniuplift_rdd_w": 1.0, "canniuplift_redem_w": 1.0, "canniuplift_seller_w": 1.0, "canniuplift_iptw_w": 1.0,
+        "canniuplift_use_treat_attn": True, "canniuplift_attn_d_dim": 16, "canniuplift_attn_num_heads": 2, "learning_rate": 1e-3,
+    },
+    "canni_w1_top2_h128_64_wd1e-05": {
+        "model": "CanniUplift", "hidden_dims": [128, 64], "weight_decay": 1e-05,
+        "canniuplift_rdd_w": 1.0, "canniuplift_redem_w": 1.0, "canniuplift_seller_w": 1.0, "canniuplift_iptw_w": 1.0,
+        "canniuplift_use_treat_attn": True, "canniuplift_attn_d_dim": 16, "canniuplift_attn_num_heads": 2, "learning_rate": 1e-3,
+    },
+    "canni_w1_top3_h128_64_wd0.0001": {
+        "model": "CanniUplift", "hidden_dims": [128, 64], "weight_decay": 0.0001,
+        "canniuplift_rdd_w": 1.0, "canniuplift_redem_w": 1.0, "canniuplift_seller_w": 1.0, "canniuplift_iptw_w": 1.0,
+        "canniuplift_use_treat_attn": True, "canniuplift_attn_d_dim": 16, "canniuplift_attn_num_heads": 2, "learning_rate": 1e-3,
+    },
+    "canni_w1_top4_h128_64_32_wd0.0001": {
+        "model": "CanniUplift", "hidden_dims": [128, 64, 32], "weight_decay": 0.0001,
+        "canniuplift_rdd_w": 1.0, "canniuplift_redem_w": 1.0, "canniuplift_seller_w": 1.0, "canniuplift_iptw_w": 1.0,
+        "canniuplift_use_treat_attn": True, "canniuplift_attn_d_dim": 16, "canniuplift_attn_num_heads": 2, "learning_rate": 1e-3,
+    },
+    "canni_w1_top5_h128_64_wd0.001": {
+        "model": "CanniUplift", "hidden_dims": [128, 64], "weight_decay": 0.001,
+        "canniuplift_rdd_w": 1.0, "canniuplift_redem_w": 1.0, "canniuplift_seller_w": 1.0, "canniuplift_iptw_w": 1.0,
+        "canniuplift_use_treat_attn": True, "canniuplift_attn_d_dim": 16, "canniuplift_attn_num_heads": 2, "learning_rate": 1e-3,
+    }
+}
+
+# 自动合流入总空间
+for version, diff_dict in TOP5_CANNI_W1_SEEDS.items():
+    base_space_copied = DEFAULT_BASE_SPACE.copy()
+    base_space_copied.update(diff_dict)
+    ALL_CUSTOM_SPACES[version] = base_space_copied
+
+
+# 🌟 v8_s6 消融实验精华 Top 12 (4-Seed 验证候选)
+V8_ABLATION_TOP12_SEEDS = {
+    # ================= [组 1: RNC (renorm=none, Clip=True)] =================
+    "v8_rnc_a5_wd0.01_clip8.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "none", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 8.0,
+    },
+    "v8_rnc_a10_wd0.01_clip8.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "weight_decay": 0.01, "conflict_renorm": "none", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 8.0,
+    },
+    "v8_rnc_a5_wd0.01_clip5.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "none", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 5.0,
+    },
+    "v8_rnc_a10_wd0.001_clip3.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "weight_decay": 0.001, "conflict_renorm": "none", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 3.0,
+    },
+
+    # ================= [组 2: C (renorm=mean, Clip=True)] =================
+    "v8_c_a5_wd0.01_clip8.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 8.0,
+    },
+    "v8_c_a5_wd0.01_clip5.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 5.0,
+    },
+    "v8_c_a10_wd0.01_clip8.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 8.0,
+    },
+    "v8_c_a10_wd0.001_clip3.0": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 10.0, "conflict_alpha_gold": 10.0, "conflict_alpha_walkin": 10.0,
+        "weight_decay": 0.001, "conflict_renorm": "mean", "conflict_use_ohem": False, 
+        "conflict_use_weight_clip": True, "conflict_max_weight_thres": 3.0,
+    },
+
+    # ================= [组 3: OHEM (renorm=mean, OHEM=True, Clip=False)] =================
+    "v8_ohem_a5_wd0.01_pct0.9": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": True, "conflict_ohem_pct": 0.9,
+        "conflict_use_weight_clip": False, 
+    },
+    "v8_ohem_a5_wd0.01_pct0.8": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": True, "conflict_ohem_pct": 0.8,
+        "conflict_use_weight_clip": False, 
+    },
+    "v8_ohem_a5_wd0.01_pct0.7": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": True, "conflict_ohem_pct": 0.7,
+        "conflict_use_weight_clip": False, 
+    },
+    "v8_ohem_a5_wd0.01_pct0.6": {
+        "model": "TARNET", "c_fusion_mode": "v8_evolution_moe", "v8_scheme": 6, 
+        "loss_types": ["prior_conflict"], "hidden_dims": [64, 32], "head_hidden_dims": None,
+        "conflict_mode": "all", "conflict_alpha_wool": 5.0, "conflict_alpha_gold": 5.0, "conflict_alpha_walkin": 5.0,
+        "weight_decay": 0.01, "conflict_renorm": "mean", "conflict_use_ohem": True, "conflict_ohem_pct": 0.6,
+        "conflict_use_weight_clip": False, 
+    }
+}
+
+# 自动合流入总空间
+for version, diff_dict in V8_ABLATION_TOP12_SEEDS.items():
+    base_space_copied = DEFAULT_BASE_SPACE.copy()
+    base_space_copied.update(diff_dict)
+    ALL_CUSTOM_SPACES[version] = base_space_copied
+
+
+
+# 🌟 EUEN_Academic Top 3 (多 Seed 验证组)
+EUEN_ACADEMIC_TOP3_SEEDS = {
+    "euen_top1_h128_64_32_wd1e-05": {
+        "model": "EUEN_Academic", 
+        "hidden_dims": [128, 64, 32], 
+        "weight_decay": 1e-05,
+        "learning_rate": 1e-3, # 默认学习率
+    },
+    "euen_top2_h128_64_32_wd1e-06": {
+        "model": "EUEN_Academic", 
+        "hidden_dims": [128, 64, 32], 
+        "weight_decay": 1e-06,
+        "learning_rate": 1e-3,
+    },
+    "euen_top3_h128_64_32_wd0.0001": {
+        "model": "EUEN_Academic", 
+        "hidden_dims": [128, 64, 32], 
+        "weight_decay": 0.0001,
+        "learning_rate": 1e-3,
+    }
+}
+
+# 自动合流入总空间
+for version, diff_dict in EUEN_ACADEMIC_TOP3_SEEDS.items():
+    base_space_copied = DEFAULT_BASE_SPACE.copy()
+    base_space_copied.update(diff_dict)
+    ALL_CUSTOM_SPACES[version] = base_space_copied
+
+# 🌟 ECUP_0717new & MTMT_0717new 精华 Top 5 (去重版, 多 Seed 验证组)
+NEW_MODELS_TOP5_SEEDS = {
+    # ================= [组 1: ECUP_0717new] =================
+    "ecup_top1_wd0.01": {
+        "model": "ECUP_0717new", "loss_types": ["bce"],
+        "hidden_dims": [128, 64, 32], "weight_decay": 0.01,
+        "d_dim": 32, "tower_h": 128, "tae_h": 128, "num_heads": 2, 
+        "gamma": 1.0, "ctcvr_weight": 1.0, "batch_size": 66536, "learning_rate": 1e-3
+    },
+    "ecup_top2_wd1e-05": {
+        "model": "ECUP_0717new", "loss_types": ["bce"],
+        "hidden_dims": [128, 64, 32], "weight_decay": 1e-05,
+        "d_dim": 32, "tower_h": 128, "tae_h": 128, "num_heads": 2, 
+        "gamma": 1.0, "ctcvr_weight": 1.0, "batch_size": 66536, "learning_rate": 1e-3
+    },
+
+    # ================= [组 2: MTMT_0717new] =================
+    "mtmt_top1_aux1.0": {
+        "model": "MTMT_0717new", "loss_types": ["bce"],
+        "hidden_dims": [128, 64, 32], "weight_decay": 0.01,
+        "expert_type": "mlp", "expert_hidden_dims": [32], "num_experts": 4,
+        "t_emb_dim": 16, "dropout_rate": 0, "aux_weight": 1.0, 
+        "batch_size": 262144, "learning_rate": 1e-3
+    },
+    "mtmt_top2_aux0.01": {
+        "model": "MTMT_0717new", "loss_types": ["bce"],
+        "hidden_dims": [128, 64, 32], "weight_decay": 0.01,
+        "expert_type": "mlp", "expert_hidden_dims": [32], "num_experts": 4,
+        "t_emb_dim": 16, "dropout_rate": 0, "aux_weight": 0.01, 
+        "batch_size": 262144, "learning_rate": 1e-3
+    },
+    "mtmt_top3_aux0.1": {
+        "model": "MTMT_0717new", "loss_types": ["bce"],
+        "hidden_dims": [128, 64, 32], "weight_decay": 0.01,
+        "expert_type": "mlp", "expert_hidden_dims": [32], "num_experts": 4,
+        "t_emb_dim": 16, "dropout_rate": 0, "aux_weight": 0.1, 
+        "batch_size": 262144, "learning_rate": 1e-3
+    }
+}
+
+# 自动合流入总空间
+for version, diff_dict in NEW_MODELS_TOP5_SEEDS.items():
+    base_space_copied = DEFAULT_BASE_SPACE.copy()
+    base_space_copied.update(diff_dict)
+    ALL_CUSTOM_SPACES[version] = base_space_copied
 # # -*- coding: utf-8 -*-
 # """
 # 💾 custom_grid_space.py

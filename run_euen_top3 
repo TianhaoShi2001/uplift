@@ -1,0 +1,66 @@
+#!/bin/bash
+# ========================================================
+# 🚀 EUEN_Academic Top 3 多 Seed 并发验证
+# 策略：3 组配置直接分发给 2、6、3 号卡！
+# ========================================================
+
+ulimit -n 65536
+MAX_JOBS=5
+
+LOG_DIR="no_ray_euen_top3_logs"
+mkdir -p $LOG_DIR
+
+SEEDS=(42 1042 2042 3042)
+
+echo "========================================================"
+echo "🚀 启动 EUEN_Academic Top 3 (4-Seed) 并发验证大盘"
+echo "📄 日志输出目录: $LOG_DIR/"
+echo "========================================================"
+
+# 每张卡认领一个王牌配置
+MODELS_GPU2=("euen_top1_h128_64_32_wd1e-05")
+MODELS_GPU6=("euen_top2_h128_64_32_wd1e-06")
+MODELS_GPU3=("euen_top3_h128_64_32_wd0.0001")
+
+run_dynamic_queue() {
+    local GPU_ID=$1
+    local MAX_CONCURRENCY=$2
+    shift 2
+    local MODELS=("$@")
+
+    for VERSION_NAME in "${MODELS[@]}"; do
+        for SEED in "${SEEDS[@]}"; do
+            
+            EXP_NAME="${VERSION_NAME}_seed_${SEED}"
+            
+            python main.py \
+                --mode single_grid \
+                --task train_y \
+                --version "$VERSION_NAME" \
+                --exp_name "$EXP_NAME" \
+                --seed "$SEED" \
+                --cuda "$GPU_ID" > "$LOG_DIR/log_${EXP_NAME}.txt" 2>&1 &
+            
+            echo "   -> 🚀 [GPU $GPU_ID] 已投递 | 队列: $(jobs -pr | wc -l)/${MAX_CONCURRENCY} | ${EXP_NAME}"
+
+            # 控制并发的拦截阀门
+            while [ $(jobs -pr | wc -l) -ge "$MAX_CONCURRENCY" ]; do
+                sleep 1
+            done
+            
+        done
+    done
+    wait
+    echo "✅ [GPU $GPU_ID] 当前流水线收网下班！"
+}
+
+# 并行拉起三张卡
+( run_dynamic_queue "2" "$MAX_JOBS" "${MODELS_GPU2[@]}" ) &
+( run_dynamic_queue "6" "$MAX_JOBS" "${MODELS_GPU6[@]}" ) &
+( run_dynamic_queue "3" "$MAX_JOBS" "${MODELS_GPU3[@]}" ) &
+
+wait
+
+echo "========================================================"
+echo "🎉 终极捷报：EUEN_Academic Top 3 (4-Seed) 已全部投递并完成！"
+echo "========================================================"

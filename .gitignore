@@ -9,5 +9,7 @@ old/
 reproduce_dynamic_logs_old/
 *.csv
 results/
+results_0717/
+results_final/
 *.pdf
 *.out

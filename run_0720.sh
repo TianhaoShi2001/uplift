@@ -5,7 +5,7 @@
 # ========================================================
 
 ulimit -n 65536
-MAX_JOBS=1
+MAX_JOBS=5
 
 LOG_DIR="no_ray_top15_logs"
 mkdir -p $LOG_DIR
@@ -23,15 +23,27 @@ C_CKPT_PATH="/NAS/shith/uplift/ckpts/criteo/train_c/TARNET/c_v1_base/exp_c_explo
 # 📦 任务清单拆分 (15个配置，均分给3张卡)
 # ---------------------------------------------------------
 MODELS_GPU2=(
-    "s6_new_top1_auuc9145_hNone_a1.0_t1_wd1e5"
+    "s6_top1_auuc9151_h64_32_a5.0_wd0.01"
+    "s6_top2_auuc9149_h64_32_a10.0_wd0.01"
+    "s6_top3_auuc9144_h16_a10.0_wd0.0001"
+    "s6_top4_auuc9135_h64_32_a1.0_wd0.01"
+    "s6_top5_auuc9134_h64_32_a10.0_wd0.0001"
 )
 
 MODELS_GPU6=(
-    "s6_new_top2_auuc9105_hNone_a10.0_t1_wd1e4"
+    "s6_top6_auuc9134_h64_32_a10.0_wd0.001"
+    "s6_top7_auuc9132_h64_32_a1.0_wd0.0001"
+    "s6_top8_auuc9131_h64_32_a1.0_wd0.001"
+    "s6_top9_auuc9131_h64_32_a1.0_wd1e5"
+    "s6_top10_auuc9124_h64_32_a5.0_wd0.0001"
 )
 
 MODELS_GPU3=(
-    "s6_new_top3_auuc9094_hNone_a0.1_t1_wd1e5"
+    "s6_top11_auuc9124_h64_32_a0.1_wd0.001"
+    "s6_top12_auuc9123_h64_32_a5.0_wd0.001"
+    "s6_top13_auuc9117_h64_32_a0.1_wd0.0001"
+    "s6_top14_auuc9115_h64_32_a0.5_wd0.0001"
+    "s6_top15_auuc9115_h64_32_a0.5_wd0.001"
 )
 
 # ---------------------------------------------------------

@@ -1,46 +1,49 @@
 #!/bin/bash
 # ========================================================
-# 🚀 Uplift 新王炸 Top3 (4-Seed) 动态滑动队列并发测试
+# 🚀 Uplift 15 大高分配置 (4-Seed) 动态滑动队列并发脚本
+# 策略：3卡火力全开，每卡承载 5 个配置，稳吃 5 并发
 # ========================================================
 
 ulimit -n 65536
+MAX_JOBS=5
 
-# ---------------------------------------------------------
-# 🛠️ 显卡与队列配置 
-# ---------------------------------------------------------
-GPU_ID="2"       # 👈 你可以随便换成当前空闲的卡 (比如 0, 2, 6)
-MAX_JOBS=       # 👈 保持 5 个并发
-
-LOG_DIR="no_ray_newtop3_logs"
+LOG_DIR="no_ray_top15_logs"
 mkdir -p $LOG_DIR
 
-SEEDS=(42 1042 2042 3042)
+SEEDS=(42 1042 2042 3042 4042)
 
 echo "========================================================"
-echo "🚀 启动新王炸 Top3 (4-Seed) 动态队列并发大盘"
-echo "▶️ [GPU $GPU_ID] 队列容量: ${MAX_JOBS} 并发进程"
+echo "🚀 启动 Top 15 霸榜组合 (4-Seed) 并发验证大盘"
+echo "▶️ [GPU 2, 6, 3] 队列容量: ${MAX_JOBS} 并发进程"
 echo "📄 日志输出目录: $LOG_DIR/"
 echo "========================================================"
 C_CKPT_PATH="/NAS/shith/uplift/ckpts/criteo/train_c/TARNET/c_v1_base/exp_c_explore/best_model.pth"
+
 # ---------------------------------------------------------
-# 📦 任务清单 (刚刚解析出来的 3 个配置名)
+# 📦 任务清单拆分 (15个配置，均分给3张卡)
 # ---------------------------------------------------------
-MODELS_NEW_TOP3=(
-    "s6_new_top1_auuc9145_hNone_a1.0_t1_wd1e5"
-    "s6_new_top2_auuc9105_hNone_a10.0_t1_wd1e4"
+MODELS_GPU2=(
     "s6_new_top3_auuc9094_hNone_a0.1_t1_wd1e5"
 )
 
+MODELS_GPU6=(
+    "s6_new_top1_auuc9145_hNone_a1.0_t1_wd1e5"
+)
+
+MODELS_GPU3=(
+    "s6_new_top2_auuc9105_hNone_a10.0_t1_wd1e4"
+)
+
 # ---------------------------------------------------------
-# ⚙️ 核心：滑动窗口动态队列控制器 (绝对不越界的 jobs 拦截)
+# ⚙️ 核心：滑动窗口动态队列控制器
 # ---------------------------------------------------------
 run_dynamic_queue() {
-    local TARGET_GPU=$1
+    local GPU_ID=$1
     local MAX_CONCURRENCY=$2
     shift 2
     local MODELS=("$@")
 
-    echo "🌊 [GPU $TARGET_GPU] 启动动态滑动队列 (容量: $MAX_CONCURRENCY 进程) ..."
+    echo "🌊 [GPU $GPU_ID] 启动动态滑动队列 (容量: $MAX_CONCURRENCY 进程) ..."
 
     for VERSION_NAME in "${MODELS[@]}"; do
         for SEED in "${SEEDS[@]}"; do
@@ -54,32 +57,40 @@ run_dynamic_queue() {
                 --version "$VERSION_NAME" \
                 --exp_name "$EXP_NAME" \
                 --seed "$SEED" \
-                --c_ckpt_path "$C_CKPT_PATH" --cuda "$TARGET_GPU" > "$LOG_DIR/log_${EXP_NAME}.txt" 2>&1 &
+                --c_ckpt_path "$C_CKPT_PATH" --cuda "$GPU_ID" > "$LOG_DIR/log_${EXP_NAME}.txt" 2>&1 &
             
-            echo "   -> 🚀 [GPU $TARGET_GPU] 成功投递任务 | 队列状态: $(jobs -pr | wc -l)/${MAX_CONCURRENCY} | 模型: ${VERSION_NAME} (Seed: ${SEED})"
+            echo "   -> 🚀 [GPU $GPU_ID] 成功投递任务 | 队列状态: $(jobs -pr | wc -l)/${MAX_CONCURRENCY} | 模型: ${VERSION_NAME} (Seed: ${SEED})"
 
-            # 2. 🌟 核心控制阀门：如果当前子 shell 的后台进程数达到上限，就死循环等待！
+            # 2. 🌟 核心控制阀门：防爆破拦截
             while [ $(jobs -pr | wc -l) -ge "$MAX_CONCURRENCY" ]; do
-                sleep 1  
+                sleep 1
             done
             
         done
     done
     
-    echo "⏳ [GPU $TARGET_GPU] 所有任务已投递完毕，等待队列中最后几名选手冲线..."
+    echo "⏳ [GPU $GPU_ID] 所有任务投递完毕，等待最后冲线..."
     wait
-    echo "✅ [GPU $TARGET_GPU] 队列清空，完美下班！"
+    echo "✅ [GPU $GPU_ID] 队列清空，圆满收网！"
 }
 
 # ---------------------------------------------------------
-# 🚀 启动单流水线运行
+# 🚀 启动三队列独立运行
 # ---------------------------------------------------------
 (
-    run_dynamic_queue "$GPU_ID" "$MAX_JOBS" "${MODELS_NEW_TOP3[@]}"
+    run_dynamic_queue "2" "$MAX_JOBS" "${MODELS_GPU2[@]}"
+) &
+
+(
+    run_dynamic_queue "6" "$MAX_JOBS" "${MODELS_GPU6[@]}"
+) &
+
+(
+    run_dynamic_queue "3" "$MAX_JOBS" "${MODELS_GPU3[@]}"
 ) &
 
 wait
 
 echo "========================================================"
-echo "🎉 终极捷报：新王炸 Top 3 (4-Seed) 验证已全部投递并跑完！"
+echo "🎉 终极捷报：Top 15 高分配置 (4-Seed) 已全部验证完毕！"
 echo "========================================================"

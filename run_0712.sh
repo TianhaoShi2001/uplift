@@ -8,8 +8,8 @@ ulimit -n 65536
 # -------------------------------------------------------------------------
 # 🛠️ 显卡资源与大盘份额指定
 # -------------------------------------------------------------------------
-NUM_GPU=0.1     # 每个 Trial 占用的 GPU 份额 (控制单卡并发密度)
-CUDA_A="2,3,6"      # 🎯 流水线 A 绑定的 GPU 卡号 (负责跑 S4 经典组与 Pure V10 爆发组)
+NUM_GPU=0.05     # 每个 Trial 占用的 GPU 份额 (控制单卡并发密度)
+CUDA_A="6"      # 🎯 流水线 A 绑定的 GPU 卡号 (负责跑 S4 经典组与 Pure V10 爆发组)
 CUDA_B="3,2,6"        # 🎯 流水线 B 绑定的 GPU 卡号 (负责跑 Ours S6 深度温度多维联动组)
 LOG_DIR="experiment_logs_ours_s4"
 mkdir -p $LOG_DIR
@@ -45,7 +45,7 @@ C_CKPT_PATH="/NAS/shith/uplift/ckpts/criteo/train_c/TARNET/c_v1_base/exp_c_explo
         --task train_y \
         --model TARNET \
         --version y_ours_s6_conflict_0717_hNone_search_alpha \
-        --exp_name y_ours_s6_conflict_0717_hNone_search_alpha0222 \
+        --exp_name y_ours_s6_conflict_0717_hNone_search_alpha02233332 \
         --cuda "$CUDA_A" \
         --c_ckpt_path "$C_CKPT_PATH" --num_per_gpu $NUM_GPU > "$LOG_DIR/log_y_ours_s6_conflict_0717_hNone_search_alpha_temp.txt"  2>&1 &
         

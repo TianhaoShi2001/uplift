@@ -9,7 +9,7 @@ ulimit -n 65536
 # 🛠️ 双核资源与显卡精细配置
 # -------------------------------------------------------------------------
 NUM_GPU=0.2     # 每个 Trial 分配的 GPU 份额
-CUDA_A="0,2,3,6"       # 流水线 A 锁死在卡 3 (跑 R=32 和 R=128)
+CUDA_A="2,3,6"       # 流水线 A 锁死在卡 3 (跑 R=32 和 R=128)
 CUDA_B="0"       # 流水线 B 锁死在卡 1 (跑 R=64 黄金基准)
 LOG_DIR="experiment_logs_canniuplift"
 mkdir -p $LOG_DIR
@@ -27,7 +27,7 @@ echo "========================================================"
 (
     echo "🔵 [流水线 B] 已在 GPU ${CUDA_B} 启动！"
     
-    python main.py --mode tune --task train_y --model CanniUplift --version y_baseline_canniuplift_paper_grid --exp_name y_baseline_canniuplift_paper_grid --cuda $CUDA_A --num_per_gpu $NUM_GPU # > $LOG_DIR/log_y_baseline_canniuplift_paper_grid8.txt 2>&1
+    python main.py --mode tune --task train_y --model CanniUplift --version y_baseline_canniuplift_paper_grid --exp_name y_baseline_canniuplift_paper_grid_3 --cuda $CUDA_A --num_per_gpu $NUM_GPU # > $LOG_DIR/log_y_baseline_canniuplift_paper_grid8.txt 2>&1
 
     # echo "▶️ [流水线 B] 正在训练 [2/3]: EFIN (efin_embed_dim = 64)..."
     # python main.py --mode tune --task train_y --model EFIN --version y_baseline_efin_64 --exp_name run_efin_rank64 --cuda $CUDA_A --num_per_gpu $NUM_GPU > $LOG_DIR/log_efin_rank64.txt 2>&1
